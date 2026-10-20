@@ -1,0 +1,54 @@
+name: Cue
+options:
+  bundleIdPrefix: com.jmarwane
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+packages:
+  CueCore:
+    path: CueCore
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    exactVersion: 3.1.0
+targets:
+  Cue:
+    type: application
+    platform: macOS
+    sources:
+      - path: Cue
+    dependencies:
+      - package: CueCore
+      - package: KeyboardShortcuts
+    info:
+      path: Cue/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Cue
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        LSMinimumSystemVersion: "26.0"
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jmarwane.cue
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_APP_SANDBOX: NO
+schemes:
+  Cue:
+    build:
+      targets:
+        Cue: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: CueCore/CueCoreTests
