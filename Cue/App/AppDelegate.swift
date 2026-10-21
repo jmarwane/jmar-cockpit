@@ -7,17 +7,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var app: AppModel?
     private var panel: PanelController?
     private var statusItem: StatusItemController?
+    private var editor: EditorWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MainMenu.install()
         var store = LibraryStore()
+        var secrets: any SecretStore = KeychainSecretStore()
         #if DEBUG
-        // Debug aid: `-CueLibraryDirectory <dir>` reads and writes a fixture library instead of the real one.
+        // Debug aid: `-CueLibraryDirectory <dir>` reads and writes a fixture library instead of the real one,
+        // with secrets kept in memory so testing never touches the login Keychain.
         if let directory = UserDefaults.standard.string(forKey: "CueLibraryDirectory") {
             store = LibraryStore(directory: URL(fileURLWithPath: directory, isDirectory: true))
+            secrets = InMemorySecretStore()
         }
         #endif
-        let app = AppModel(store: store)
+        let app = AppModel(store: store, secrets: secrets)
+        let editor = EditorWindowController(model: EditorModel(app: app))
         let panel = PanelController(model: PanelModel(app: app))
+        panel.model.openEditor = { [weak editor] id, atTestRun in editor?.show(itemID: id, atTestRun: atTestRun) }
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
         app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
         statusItem.setIcon(app.iconState)
@@ -27,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         KeyboardShortcuts.onKeyDown(for: .togglePanel) { [weak panel] in panel?.toggle() }
 
         self.app = app
+        self.editor = editor
         self.panel = panel
         self.statusItem = statusItem
 
@@ -36,6 +44,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let command = note.object as? String ?? ""
             MainActor.assumeIsolated {
                 if command == "toggle" { panel.toggle() }
+                if command.hasPrefix("editor-snapshot:") { editor.writeSnapshot(to: String(command.dropFirst("editor-snapshot:".count))) }
+                if command == "editor-close" { editor.closeWindow() }
+                if command.hasPrefix("editor-new:") { editor.showNew(command: String(command.dropFirst("editor-new:".count))) }
+                if command == "editor-save", let id = editor.model.selectedID { editor.model.save(id) }
+                if command == "editor-revert", let id = editor.model.selectedID { editor.model.revert(id) }
+                if command == "editor-remove", let id = editor.model.selectedID { editor.model.remove(id) }
+                if command.hasPrefix("editor-command:"), var draft = editor.model.draft {
+                    draft.command = String(command.dropFirst("editor-command:".count))
+                    editor.model.draft = draft
+                }
+                if command.hasPrefix("editor-move:"), let parts = Optional(command.dropFirst("editor-move:".count).split(separator: ",")),
+                   parts.count == 2, let from = Int(parts[0]), let to = Int(parts[1]) {
+                    editor.model.move(from: IndexSet(integer: from), to: to)
+                }
+                if command.hasPrefix("editor-test") { if let id = editor.model.selectedID { editor.model.testRun(id) } }
+                if command.hasPrefix("editor-select:") {
+                    let name = String(command.dropFirst("editor-select:".count))
+                    editor.model.select(editor.model.sidebarItems.first { $0.name == name }?.id)
+                }
                 panel.model.debugCommand(command)
                 if command.hasPrefix("snapshot:") { panel.writeSnapshot(to: String(command.dropFirst("snapshot:".count))) }
             }

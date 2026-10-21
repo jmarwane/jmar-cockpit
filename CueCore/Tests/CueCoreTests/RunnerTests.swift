@@ -41,6 +41,10 @@ import Testing
         #expect(missing.failureMessage == "Command not found: cue-no-such-command")
         #expect(missing.hint == "Not on Cue's PATH; check Settings › Environment")
 
+        let missingPath = try await run("./missing-script.sh")
+        #expect(missingPath.failureMessage == "Command not found: ./missing-script.sh")
+        #expect(missingPath.hint == "No program at that path; relative paths start from the item's folder")
+
         try dir.file("plain.txt", "not a program")
         let notExecutable = try await run("./plain.txt")
         #expect(notExecutable.ending == .exited(126))

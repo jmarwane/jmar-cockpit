@@ -49,6 +49,8 @@ final class PanelModel {
 
     /// Hooks the controller provides.
     var closePanel: () -> Void = {}
+    /// Opens the editor on an item; `atTestRun` for untested items.
+    var openEditor: (UUID?, _ atTestRun: Bool) -> Void = { _, _ in }
     var showActionsMenu: ([MenuAction]) -> Void = { _ in }
 
     private var toastTask: Task<Void, Never>?
@@ -220,7 +222,8 @@ final class PanelModel {
         case .check:
             app.check(item.id)
         case .openEditorAtTestRun:
-            edit(item)
+            closePanel()
+            openEditor(item.id, true)
         case .open:
             if app.open(item.target) {
                 closePanel()
@@ -282,9 +285,10 @@ final class PanelModel {
         expansion = nil
     }
 
+    /// ⌘E: the editor on the selected item, or on the first one when nothing is selected.
     func edit(_ item: Item?) {
-        guard item != nil else { return }
-        showToast("Editor isn't built yet")
+        closePanel()
+        openEditor(item?.id, item.map { !$0.isTested } ?? false)
     }
 
     // MARK: ⌘K

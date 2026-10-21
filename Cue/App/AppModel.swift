@@ -25,11 +25,11 @@ final class AppModel {
 
     let store: LibraryStore
     let supervisor: Supervisor
-    private let secrets: any SecretStore
+    let secrets: any SecretStore
     private var loadedFileDate: Date?
     private var environmentReady: Task<Void, Never>?
 
-    init(store: LibraryStore = LibraryStore(), secrets: any SecretStore = InMemorySecretStore()) {
+    init(store: LibraryStore = LibraryStore(), secrets: any SecretStore = KeychainSecretStore()) {
         self.store = store
         self.secrets = secrets
         var fallback = ProcessInfo.processInfo.environment
@@ -66,15 +66,7 @@ final class AppModel {
             appLog.error("load failed: \(error.description, privacy: .public)")
         }
         loadedFileDate = modificationDate()
-        let items = library.items
-        for item in items where item.kind == .service && services[item.id] == nil {
-            services[item.id] = ServiceStatus()
-        }
-        for item in items where item.kind == .task && tasks[item.id] == nil {
-            tasks[item.id] = .ready
-        }
-        Task { await supervisor.setItems(items) }
-        updateIcon()
+        reconcileStatuses()
     }
 
     private func save() {
@@ -101,6 +93,115 @@ final class AppModel {
         library.items[index].lastInputs = values
         save()
         Task { await supervisor.setItems(library.items) }
+    }
+
+    // MARK: Editing
+
+    enum EditError: Error, CustomStringConvertible {
+        case notSaved(String)
+        case running(String)
+
+        var description: String {
+            switch self {
+            case .notSaved(let detail): detail
+            case .running(let name): "Stop \(name) first"
+            }
+        }
+    }
+
+    /// Saves an item (new or existing), writing typed secret values to the Keychain
+    /// and deleting the ones whose variables were removed or are no longer secret.
+    func saveItem(_ item: Item, secretValues: [String: String]) throws(EditError) {
+        guard loadError == nil else { throw .notSaved("items.json couldn't be read, so nothing is saved over it") }
+        var item = item
+        for index in item.environment.indices where item.environment[index].isSecret {
+            item.environment[index].value = ""
+        }
+        let previous = self.item(item.id)
+
+        if let keychain = secrets as? KeychainSecretStore {
+            for (key, value) in secretValues where item.environment.contains(where: { $0.key == key && $0.isSecret }) {
+                do {
+                    try keychain.setSecret(value, itemID: item.id, key: key)
+                } catch {
+                    throw .notSaved("Keychain: \(error)")
+                }
+            }
+            let keptSecrets = Set(item.environment.filter(\.isSecret).map(\.key))
+            for old in previous?.environment ?? [] where old.isSecret && !keptSecrets.contains(old.key) {
+                keychain.deleteSecret(itemID: item.id, key: old.key)
+            }
+        }
+
+        if let index = library.items.firstIndex(where: { $0.id == item.id }) {
+            library.items[index] = item
+        } else {
+            item.order = (library.items.map(\.order).max() ?? -1) + 1
+            library.items.append(item)
+        }
+        save()
+        reconcileStatuses()
+    }
+
+    /// Removes an item and its Keychain secrets. Refused while Cue is running it.
+    func removeItem(_ id: UUID) throws(EditError) {
+        guard let item = item(id) else { return }
+        if isActive(id) { throw .running(item.name) }
+        if let keychain = secrets as? KeychainSecretStore {
+            for variable in item.environment where variable.isSecret {
+                keychain.deleteSecret(itemID: id, key: variable.key)
+            }
+        }
+        library.items.removeAll { $0.id == id }
+        save()
+        reconcileStatuses()
+    }
+
+    /// Puts items in the given order and renumbers them.
+    func reorder(_ ids: [UUID]) {
+        var items = library.orderedItems
+        let positions = Dictionary(ids.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        items.sort { (positions[$0.id] ?? Int.max) < (positions[$1.id] ?? Int.max) }
+        for index in items.indices { items[index].order = index }
+        library.items = items
+        save()
+    }
+
+    /// Stores a passing test's signature, if the saved item still has that exact setup.
+    func markTested(_ id: UUID, signature: String) {
+        guard let index = library.items.firstIndex(where: { $0.id == id }), library.items[index].signature == signature else { return }
+        library.items[index].testedSignature = signature
+        save()
+        reconcileStatuses()
+    }
+
+    /// Running, starting, stopping or On because of Cue.
+    func isActive(_ id: UUID) -> Bool {
+        if tasks[id]?.isRunning == true { return true }
+        guard let status = services[id] else { return false }
+        return status.state.isTransitioning || status.ownsProcess || status.state.isOn
+    }
+
+    private func reconcileStatuses() {
+        let ids = Set(library.items.map(\.id))
+        for item in library.items {
+            switch item.kind {
+            case .service:
+                tasks[item.id] = nil
+                if services[item.id] == nil { services[item.id] = ServiceStatus() }
+            case .task:
+                services[item.id] = nil
+                if tasks[item.id] == nil { tasks[item.id] = .ready }
+            case .link:
+                services[item.id] = nil
+                tasks[item.id] = nil
+            }
+        }
+        services = services.filter { ids.contains($0.key) }
+        tasks = tasks.filter { ids.contains($0.key) }
+        let items = library.items
+        Task { await supervisor.setItems(items) }
+        updateIcon()
     }
 
     // MARK: Status

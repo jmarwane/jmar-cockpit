@@ -74,3 +74,23 @@ Choices the spec doesn't make, one per line, with the reason.
 - A library that fails to load shows its error in the panel and marks the icon as needing attention; nothing is saved over it.
 - The icon needs attention for Failed items and Unknown-with-a-reason; a never-checked service (Unknown, no reason) doesn't count.
 - Debug-only aids for testing without Screen Recording: `-CueLibraryDirectory`, and `key:`, `type:`, `click:`, `select:`, `actions` debug notifications that call the same model methods as keys and clicks.
+
+## M3 · Editor and Test Run
+
+- Each item keeps its own draft until Save or Revert; switching items never loses typing, and closing the window keeps drafts for the session (the sidebar dot shows them). No "discard changes?" prompt: nothing is lost by closing.
+- A new item is a draft until saved; − on an unsaved draft just drops it. − on a saved item asks first and also deletes its Keychain secrets.
+- Removing an item Cue is running is refused (`Stop <name> first`): deleting it would orphan a process Cue owns.
+- Name, icon and tint follow the command (and folder) until the user edits them; the name for `npm run dev` uses the folder (`Splash dev`), scripts use their file name, path arguments are skipped.
+- Kind for a new command: Service if `dev`, `serve`, `server`, `watch` or `up` appears as a word (so `update` and `backup` don't count).
+- "Ask before running" switches on at Save only when the command changed and matches `rm -r` (any recursive flag), `sudo`, `--force`, `git push`, `git reset --hard`; switching it off again sticks.
+- The tested signature is stored when a Test Run passes and the saved item has that exact setup; a passing test of an unsaved draft is applied when that draft is saved unchanged.
+- Test Run shows the command with inputs as `NAME=value command` (how they arrive), the resolved program (`isn't on Cue's PATH`, or `doesn't exist or isn't executable` for paths), folder and shell, the last output line, then the result.
+- A service Test Run uses its own supervisor: check first (already On → "Stop it, then test again", not passed), start and wait for the check, wait out the 3 s "exited right away" window for process checks, then stop and confirm Off. Testing an item Cue is running is refused up front.
+- Test Run uses typed-but-unsaved secret values, then the Keychain.
+- Validation before Save or Test Run: a name, a command (or link target), a numeric port or `$NAME`, a status/stop command when chosen, input and variable names that are valid shell names, and a value for every secret.
+- Exit 127 for a path (`./x.sh`) keeps the spec's `Command not found: ./x.sh` but hints at the path, not the PATH.
+- Keychain items: generic passwords, service `Cue`, account `<itemID>.<KEY>`, label `Cue secret <KEY>`. With ad-hoc signing, macOS may ask to allow access again after each rebuild.
+- A minimal main menu (Quit, Edit, Close) is installed though never shown: text fields need it for ⌘C/⌘V/⌘A/⌘Z, and the editor for ⌘W.
+- Test Run is ⌘R and Save is ⌘S; opening the editor "at Test Run" tints the Test Run button and says "Test it before using it from the menu".
+- Closing the editor hides Cue so focus returns to the previous app (Cue has no Dock icon).
+- Debug builds with `-CueLibraryDirectory` keep secrets in memory, never in the login Keychain.

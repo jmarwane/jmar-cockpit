@@ -63,7 +63,10 @@ public struct RunResult: Sendable, Equatable {
     }
 
     public var hint: String? {
-        ending == .exited(127) ? "Not on Cue's PATH; check Settings › Environment" : nil
+        guard ending == .exited(127) else { return nil }
+        return missingCommand.contains("/")
+            ? "No program at that path; relative paths start from the item's folder"
+            : "Not on Cue's PATH; check Settings › Environment"
     }
 
     /// The shell's own "command not found: X" if it said so, or else the command's first word.
