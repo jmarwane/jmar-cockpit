@@ -133,7 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
 
-        // Debug aids, read from launch arguments only (never persisted):
+        #if DEBUG
+        // Debug aids, passed as launch arguments:
         // `open Cue.app --args -CueOpenPanelAtLaunch YES -CueSnapshotPath /tmp/panel.png`
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "CueOpenPanelAtLaunch") {
@@ -144,5 +145,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        #endif
     }
 }

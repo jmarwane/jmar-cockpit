@@ -120,6 +120,7 @@ final class ReminderNotifications: NSObject, ReminderNotifying, UNUserNotificati
     }
 }
 
+#if DEBUG
 /// Debug runs against a fixture library: log instead of scheduling, so no permission prompt appears.
 @MainActor
 final class LoggedReminderNotifications: ReminderNotifying {
@@ -128,3 +129,4 @@ final class LoggedReminderNotifications: ReminderNotifying {
     func cancel(_ reminder: Reminder) { appLog.notice("would cancel reminder \(reminder.text, privacy: .public)") }
     func post(title: String, body: String, itemID: UUID) { appLog.notice("would notify: \(title, privacy: .public) — \(body, privacy: .public)") }
 }
+#endif
