@@ -24,6 +24,16 @@ final class StatusItemController: NSObject {
         return window.convertToScreen(button.convert(button.bounds, to: nil))
     }
 
+    func setIcon(_ state: MenuBarIcon.State) {
+        item.button?.image = MenuBarIcon.image(for: state)
+        let label = switch state {
+        case .idle: "Cue"
+        case .somethingOn: "Cue, something running"
+        case .needsAttention: "Cue, needs attention"
+        }
+        item.button?.setAccessibilityLabel(label)
+    }
+
     func setHighlighted(_ highlighted: Bool) {
         item.button?.highlight(highlighted)
     }

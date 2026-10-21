@@ -1,0 +1,99 @@
+@testable import CueCore
+import Foundation
+import Testing
+
+/// The one-click table from spec §5.
+@Suite struct RowPresentationTests {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func tested(_ item: Item) -> Item {
+        var item = item
+        item.testedSignature = item.signature
+        return item
+    }
+
+    private var web: Item {
+        tested(Item(kind: .service, name: "Splash Server", command: "npm run dev", runningWhen: .port("$PORT"), address: "localhost:$PORT")
+            .with { $0.inputs = [Input(name: "PORT", defaultValue: "4000")] })
+    }
+
+    private func row(_ item: Item, _ state: ServiceState, checking: Bool = false, owns: Bool = false) -> RowPresentation {
+        RowPresentation.make(item: item, service: ServiceStatus(state: state, isChecking: checking, ownsProcess: owns), now: now)
+    }
+
+    @Test func serviceRows() {
+        #expect(row(web, .off(since: now.addingTimeInterval(-180))) == RowPresentation(glyph: .off, subtitle: "Not running · stopped 3m ago", primary: .start))
+        #expect(row(web, .off(since: nil)).subtitle == "Not running")
+        #expect(row(web, .starting(since: now)) == RowPresentation(glyph: .starting, subtitle: "Starting…", primary: .none))
+        #expect(row(web, .on(since: now.addingTimeInterval(-240), origin: .cue), owns: true)
+            == RowPresentation(glyph: .on, subtitle: "Running · 4m · localhost:4000", primary: .stop))
+        #expect(row(web, .stopping(since: now)) == RowPresentation(glyph: .stopping, subtitle: "Stopping…", primary: .none))
+        #expect(row(web, .unknown("Docker isn't responding")) == RowPresentation(glyph: .unknown, subtitle: "Status unknown · Docker isn't responding", primary: .check))
+        #expect(row(web, .unknown(nil), checking: true) == RowPresentation(glyph: .checking, subtitle: "Checking status…", primary: .none))
+        #expect(row(web, .on(since: nil, origin: .lastSession)).subtitle == "On · from last session")
+    }
+
+    @Test func startedOutsideCueStopsTheRightWay() {
+        #expect(row(web, .on(since: nil, origin: .outside)) == RowPresentation(glyph: .on, subtitle: "On · started outside Cue", primary: .stopProcessOnPort(4000)))
+        let withCommand = tested(web.with { $0.stopBy = .command("docker stop web") })
+        #expect(row(withCommand, .on(since: nil, origin: .outside)).primary == .stop)
+        let statusOnly = tested(web.with { $0.runningWhen = .statusCommand("pgrep -q x") })
+        #expect(row(statusOnly, .on(since: nil, origin: .outside)).primary == .none)
+    }
+
+    @Test func failedRowsShowTheBestReason() {
+        let exit = Failure(message: "Exited with code 1", exitCode: 1, errorLine: "Error: listen EADDRINUSE")
+        #expect(row(web, .failed(exit)) == RowPresentation(glyph: .failed, subtitle: "Failed · exit 1 · Error: listen EADDRINUSE", primary: .showError))
+        #expect(row(web, .failed(Failure(message: "Didn't come up in 30 s"))).subtitle == "Failed · Didn't come up in 30 s")
+        #expect(row(web, .failed(Failure(message: "Exited with code 2", exitCode: 2, errorLine: "x", reportedReason: "quota exceeded"))).subtitle
+            == "Failed · quota exceeded")
+    }
+
+    @Test func taskRows() {
+        let task = tested(Item(kind: .task, name: "Report", command: "./report.sh"))
+        func row(_ state: TaskState) -> RowPresentation { RowPresentation.make(item: task, task: state, now: now) }
+        let done = RunResult(ending: .exited(0), command: "x", startedAt: now.addingTimeInterval(-130), endedAt: now.addingTimeInterval(-120), result: "saved streams.csv")
+
+        #expect(row(.ready) == RowPresentation(glyph: .none, subtitle: "Ready", primary: .run))
+        #expect(row(.running(since: now.addingTimeInterval(-42))) == RowPresentation(glyph: .starting, subtitle: "Running · 42s", primary: .showRunDetails))
+        #expect(row(.done(done)) == RowPresentation(glyph: .none, subtitle: "Done · saved streams.csv · 2m ago", primary: .run))
+        #expect(row(.cancelled(at: now.addingTimeInterval(-60))) == RowPresentation(glyph: .none, subtitle: "Cancelled · 1m ago", primary: .run))
+        #expect(row(.failed(Failure(message: "Timed out after 2 min"))).primary == .showError)
+        #expect(row(.outcomeUnknown).subtitle == "Outcome unknown · Cue quit during the run")
+    }
+
+    @Test func notYetTestedWhenIdle() {
+        let task = Item(kind: .task, name: "Report", command: "./report.sh")
+        #expect(RowPresentation.make(item: task, task: .ready, now: now) == RowPresentation(glyph: .none, subtitle: "Not yet tested", primary: .openEditorAtTestRun))
+        // Not idle: the real state wins.
+        #expect(RowPresentation.make(item: task, task: .running(since: now), now: now).primary == .showRunDetails)
+        let service = web.with { $0.testedSignature = nil }
+        #expect(row(service, .off(since: nil)).subtitle == "Not yet tested")
+        #expect(row(service, .on(since: nil, origin: .cue), owns: true).primary == .stop)
+    }
+
+    @Test func linkRows() {
+        let link = Item(kind: .link, name: "Admin", target: "http://localhost:4000/admin")
+        #expect(RowPresentation.make(item: link) == RowPresentation(glyph: .link, subtitle: "localhost:4000/admin", primary: .open))
+        #expect(LinkTarget.url(for: "localhost:4000/admin")?.absoluteString == "http://localhost:4000/admin")
+        #expect(LinkTarget.url(for: "https://example.com/a")?.absoluteString == "https://example.com/a")
+        #expect(LinkTarget.url(for: "~/Music")?.path == NSHomeDirectory() + "/Music")
+        #expect(LinkTarget.url(for: "/Applications/Logic Pro.app")?.isFileURL == true)
+        #expect(LinkTarget.url(for: "example.com")?.absoluteString == "http://example.com")
+        #expect(LinkTarget.display(NSHomeDirectory() + "/Music") == "~/Music")
+    }
+
+    @Test func relativeTimes() {
+        #expect(RelativeText.ago(now.addingTimeInterval(-30), now: now) == "just now")
+        #expect(RelativeText.ago(now.addingTimeInterval(-7200), now: now) == "2h ago")
+        #expect(RelativeText.elapsed(since: now.addingTimeInterval(-3900), now: now) == "1h 5m")
+    }
+}
+
+extension Item {
+    func with(_ change: (inout Item) -> Void) -> Item {
+        var copy = self
+        change(&copy)
+        return copy
+    }
+}

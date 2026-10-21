@@ -55,3 +55,22 @@ Choices the spec doesn't make, one per line, with the reason.
 - Port protection between items applies to services Cue is running: starting a second item on a port held by a running Cue service shows `Port N is already in use by <name>` instead of launching (owner lookup via lsof is M6).
 - Supervisor reports changes on one `AsyncStream<SupervisorEvent>`: the app's main-actor model is the single consumer.
 - Tests use `nc -lk` (in macOS) as a fixture server, and ports below the ephemeral range: parallel tests binding port 0 can't steal a fixture's port.
+
+## M2 · Panel
+
+- Open question §19 (pinned section past ~20 items): took the default, a flat list plus search. You weren't available to ask.
+- Row presentation (glyph, subtitle, one-click action) lives in CueCore as pure functions: the §5 one-click table is unit-tested without UI.
+- "Checking status…" shows only when there's no earlier result (or after clicking Check on Unknown); routine re-checks keep the last glyph, dimmed if stale: checking every service on each open would otherwise flash every row.
+- "Not yet tested" replaces the subtitle only when idle (Off, Ready, Done, Cancelled); Failed, Unknown and running states show their real status: status first.
+- Failed subtitle prefers the script's `::cue reason`, then `exit N · first error line`, then the failure message.
+- Relative times: `just now` under a minute, then `3m ago`, `2h ago`, `4d ago`; elapsed: `42s`, `4m`, `1h 5m`.
+- Error details headline is `Exit 1 · 2m ago` with the error line below it (not repeated), or `<message> · 2m ago` without an exit code.
+- Until the milestones that build them, the editor, quick add, Settings and "Stop process on port…" answer with a short toast instead of doing nothing; New Reminder, add and Recent rows aren't shown.
+- ⌘K is a native NSMenu opened from the footer: keyboard navigation and VoiceOver come for free; the panel ignores losing key status while it tracks.
+- An expansion belongs to its row: activating another row closes it, and ↵ submits it only while its row is selected. Prevents ↵ from running an item other than the selected one.
+- Hover selects only after the pointer actually moves: a resting pointer over a re-rendered row stole the selection back from the arrow keys.
+- While an expansion is open, hovering doesn't change the selection: a mouse nudge mustn't abandon a half-filled form.
+- items.json is re-read when the panel opens, if its modification date changed: supports hand-written files (M2) without moving rows while the panel is open.
+- A library that fails to load shows its error in the panel and marks the icon as needing attention; nothing is saved over it.
+- The icon needs attention for Failed items and Unknown-with-a-reason; a never-checked service (Unknown, no reason) doesn't count.
+- Debug-only aids for testing without Screen Recording: `-CueLibraryDirectory`, and `key:`, `type:`, `click:`, `select:`, `actions` debug notifications that call the same model methods as keys and clicks.

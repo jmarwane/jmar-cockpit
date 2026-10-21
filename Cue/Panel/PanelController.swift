@@ -7,7 +7,7 @@ let panelLog = Logger(subsystem: "com.jmarwane.cue", category: "panel")
 /// Shows the panel under the status item and closes it on Esc, a click outside, or the hotkey.
 @MainActor
 final class PanelController: NSObject, NSWindowDelegate {
-    let model = PanelModel()
+    let model: PanelModel
 
     /// The status item's frame on screen.
     var anchor: () -> NSRect? = { nil }
@@ -17,10 +17,15 @@ final class PanelController: NSObject, NSWindowDelegate {
     private let hostingView: PanelHostingView
     private var outsideClickMonitor: Any?
     private var keyMonitor: Any?
+    /// While the ⌘K menu tracks, the panel isn't key; that mustn't close it.
+    private var isShowingMenu = false
 
-    override init() {
+    init(model: PanelModel) {
+        self.model = model
         hostingView = PanelHostingView(rootView: PanelRootView(model: model))
         super.init()
+        model.closePanel = { [weak self] in self?.close(reason: "model") }
+        model.showActionsMenu = { [weak self] actions in self?.showMenu(actions) }
         hostingView.sizingOptions = [.intrinsicContentSize]
         hostingView.onIntrinsicSizeChange = { [weak self] in self?.fitToContent() }
 
@@ -121,9 +126,9 @@ final class PanelController: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.close(reason: "outside click") }
         }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.panel, event.keyCode == 53 else { return event }
-            self.escape()
-            return nil
+            guard let self, event.window === self.panel else { return event }
+            let handled = MainActor.assumeIsolated { self.model.handleKeyDown(event) }
+            return handled ? nil : event
         }
     }
 
@@ -133,15 +138,51 @@ final class PanelController: NSObject, NSWindowDelegate {
         keyMonitor = nil
     }
 
-    /// Esc clears the search first, then closes the panel.
-    private func escape() {
-        if model.clearSearch() { return }
-        close()
+    // MARK: ⌘K
+
+    private func showMenu(_ actions: [MenuAction]) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        var handlers: [() -> Void] = []
+        for action in actions {
+            if action.isSeparator {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: action.title, action: #selector(menuItemChosen(_:)), keyEquivalent: action.keyEquivalent)
+            item.keyEquivalentModifierMask = action.modifiers
+            item.target = self
+            item.tag = handlers.count
+            handlers.append(action.perform)
+            menu.addItem(item)
+        }
+        menuHandlers = handlers
+        guard let view = panel.contentView else { return }
+        // Opens up from the footer's right edge, where "Actions ⌘K" sits.
+        let point = NSPoint(x: view.bounds.maxX - 12, y: Metrics.footerHeight - 6)
+        isShowingMenu = true
+        panelLog.notice("actions menu: \(actions.map(\.title).joined(separator: " | "), privacy: .public)")
+        menu.popUp(positioning: nil, at: point, in: view)
+        isShowingMenu = false
+        menuHandlers = []
+        if panel.isVisible { panel.makeKey() }
+        pendingMenuAction?()
+        pendingMenuAction = nil
+    }
+
+    private var menuHandlers: [() -> Void] = []
+    private var pendingMenuAction: (() -> Void)?
+
+    @objc private func menuItemChosen(_ sender: NSMenuItem) {
+        guard menuHandlers.indices.contains(sender.tag) else { return }
+        // Run after tracking ends, so actions that close the panel do so cleanly.
+        pendingMenuAction = menuHandlers[sender.tag]
     }
 
     // MARK: NSWindowDelegate
 
     func windowDidResignKey(_ notification: Notification) {
+        guard !isShowingMenu else { return }
         close(reason: "resign key")
     }
 }

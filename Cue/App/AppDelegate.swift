@@ -1,19 +1,32 @@
 import AppKit
+import CueCore
 import KeyboardShortcuts
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var app: AppModel?
     private var panel: PanelController?
     private var statusItem: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let panel = PanelController()
+        var store = LibraryStore()
+        #if DEBUG
+        // Debug aid: `-CueLibraryDirectory <dir>` reads and writes a fixture library instead of the real one.
+        if let directory = UserDefaults.standard.string(forKey: "CueLibraryDirectory") {
+            store = LibraryStore(directory: URL(fileURLWithPath: directory, isDirectory: true))
+        }
+        #endif
+        let app = AppModel(store: store)
+        let panel = PanelController(model: PanelModel(app: app))
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
+        app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
+        statusItem.setIcon(app.iconState)
         panel.anchor = { [weak statusItem] in statusItem?.buttonFrameOnScreen }
         panel.onVisibilityChange = { [weak statusItem] visible in statusItem?.setHighlighted(visible) }
 
         KeyboardShortcuts.onKeyDown(for: .togglePanel) { [weak panel] in panel?.toggle() }
 
+        self.app = app
         self.panel = panel
         self.statusItem = statusItem
 
@@ -23,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let command = note.object as? String ?? ""
             MainActor.assumeIsolated {
                 if command == "toggle" { panel.toggle() }
+                panel.model.debugCommand(command)
                 if command.hasPrefix("snapshot:") { panel.writeSnapshot(to: String(command.dropFirst("snapshot:".count))) }
             }
         }
