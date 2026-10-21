@@ -60,6 +60,8 @@ final class TestListener: @unchecked Sendable {
     /// With `listening` false the port is only reserved: no other test can take it, and connections are refused.
     init(port requested: Int = 0, listening: Bool = true) throws {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
+        // Children other tests spawn mustn't inherit the socket and hold the port.
+        _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
         var yes: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_in()

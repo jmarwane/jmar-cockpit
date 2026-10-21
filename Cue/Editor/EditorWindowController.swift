@@ -50,8 +50,21 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
 
     /// Debug aid: renders the editor window's content into a PNG.
     func writeSnapshot(to path: String) {
-        guard let window, let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        // cacheDisplay skips the window's own background; paint it first so text is legible.
+        if let window { DebugSnapshot.write(window, to: path) }
+    }
+    #endif
+
+    func windowWillClose(_ notification: Notification) {
+        // Cue has no Dock icon; give focus back to the app that had it.
+        NSApp.hide(nil)
+    }
+}
+
+#if DEBUG
+enum DebugSnapshot {
+    /// Renders a window's content into a PNG, painting the window background first so text is legible.
+    @MainActor static func write(_ window: NSWindow, to path: String) {
+        guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         window.effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -62,10 +75,5 @@ final class EditorWindowController: NSObject, NSWindowDelegate {
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
     }
-    #endif
-
-    func windowWillClose(_ notification: Notification) {
-        // Cue has no Dock icon; give focus back to the app that had it.
-        NSApp.hide(nil)
-    }
 }
+#endif

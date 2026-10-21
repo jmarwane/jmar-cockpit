@@ -12,10 +12,12 @@ enum Expansion: Equatable {
     case runDetails(UUID)
     /// The reminder form, under the New Reminder row, the add row, or the reminder being changed.
     case reminderForm(UUID)
+    /// `Stop process on port 4000 (node, pid 4312)?`
+    case stopOnPort(UUID, port: Int, owner: PortOwner)
 
     var itemID: UUID {
         switch self {
-        case .inputs(let id), .confirm(let id, _), .error(let id), .runDetails(let id), .reminderForm(let id): id
+        case .inputs(let id), .confirm(let id, _), .error(let id), .runDetails(let id), .reminderForm(let id), .stopOnPort(let id, _, _): id
         }
     }
 }
@@ -89,6 +91,8 @@ final class PanelModel {
     var showActionsMenu: ([MenuAction]) -> Void = { _ in }
     /// Opens the editor on a new, unsaved item made from a command (Save… on a Recent row).
     var openEditorNew: (String) -> Void = { _ in }
+    /// Opens the View Log window for an item.
+    var openLog: (UUID) -> Void = { _ in }
 
     private var toastTask: Task<Void, Never>?
     /// Where the pointer was at the last selection change; hover only counts once it moves.
@@ -102,6 +106,7 @@ final class PanelModel {
     // MARK: Opening and closing
 
     func didOpen() {
+        app.isPanelOpen = true
         pointerAtLastSelection = NSEvent.mouseLocation
         app.reloadIfChanged()
         rowOrder = app.items.map(\.id)
@@ -112,6 +117,7 @@ final class PanelModel {
     }
 
     func didClose() {
+        app.isPanelOpen = false
         expansion = nil
     }
 
@@ -469,7 +475,9 @@ final class PanelModel {
             expansion = nil
             app.stop(item.id)
         case .stopProcessOnPort(let port):
-            showToast("Can't stop port \(port) yet")
+            confirmStopOnPort(item, port: port)
+        case .edit:
+            edit(item)
         case .showError:
             expansion = expansion == .error(item.id) ? nil : .error(item.id)
         case .showRunDetails:
@@ -532,8 +540,28 @@ final class PanelModel {
             begin(item, inputs: values)
         case .error:
             retry(item)
+        case .stopOnPort(_, _, let owner):
+            self.expansion = nil
+            app.stopProcess(item.id, pid: owner.pid)
         case .runDetails, .reminderForm:
             break
+        }
+    }
+
+    /// Looks up who listens on the port, then asks: `Stop process on port 4000 (node, pid 4312)?`
+    func confirmStopOnPort(_ item: Item, port: Int) {
+        if case .stopOnPort(item.id, _, _)? = expansion {
+            expansion = nil
+            return
+        }
+        Task {
+            guard let owner = await PortOwner.lookup(port: port).first else {
+                showToast("Nothing is listening on port \(port)")
+                app.check(item.id)
+                return
+            }
+            guard selection == item.id else { return }
+            expansion = .stopOnPort(item.id, port: port, owner: owner)
         }
     }
 
@@ -600,6 +628,13 @@ final class PanelModel {
         }
     }
 
+    private static func isOnOrFailed(_ state: ServiceState?) -> Bool {
+        switch state {
+        case .on?, .failed?: true
+        default: false
+        }
+    }
+
     func actions(for item: Item) -> [MenuAction] {
         let presentation = app.presentation(for: item)
         var actions: [MenuAction] = []
@@ -614,6 +649,13 @@ final class PanelModel {
             actions.append(MenuAction(title: "Open \(address)") { [weak self] in
                 guard let self else { return }
                 if app.open(address) { closePanel() } else { showToast("Can't open \(address)") }
+            })
+        }
+        if app.hasLog(item.id) {
+            actions.append(MenuAction(title: "View Log") { [weak self] in
+                guard let self else { return }
+                closePanel()
+                openLog(item.id)
             })
         }
         if let details = app.errorDetails(for: item.id) {
@@ -647,6 +689,12 @@ final class PanelModel {
                 self?.app.copy(item.target)
                 self?.showToast("Copied")
             })
+        }
+        // A port service answering through a process Cue doesn't own: offer to stop that process.
+        if item.kind == .service, service?.ownsProcess == false, case .port(let text) = item.runningWhen,
+           let port = try? Placeholders.port(text, values: LaunchSpec.placeholderValues(for: item, inputs: item.currentInputValues)),
+           presentation.primary != .stopProcessOnPort(port), Self.isOnOrFailed(service?.state) {
+            actions.append(MenuAction(title: "Stop Process on Port \(port)…") { [weak self] in self?.confirmStopOnPort(item, port: port) })
         }
         if case .failed(let failure)? = service?.state, failure.canForceStop {
             actions.append(MenuAction(title: "Force Stop") { [weak self] in self?.app.forceStop(item.id) })

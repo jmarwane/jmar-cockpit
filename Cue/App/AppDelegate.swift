@@ -8,6 +8,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: PanelController?
     private var statusItem: StatusItemController?
     private var editor: EditorWindowController?
+    private var logs: LogWindowController?
+
+    /// Quit with Cue-owned processes running: name them, offer Stop and Quit, and default to Cancel (spec §12).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let app else { return .terminateNow }
+        Task { @MainActor in
+            guard let summary = await app.runningSummary() else {
+                sender.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = summary.message
+            var info = "Quitting stops what Cue started."
+            if !summary.managedElsewhere.isEmpty {
+                info += " \(summary.managedElsewhere.joined(separator: ", ")) \(summary.managedElsewhere.count == 1 ? "is" : "are") run by another manager and will keep running."
+            }
+            alert.informativeText = info
+            let cancel = alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Stop and Quit")
+            cancel.keyEquivalent = "\r"
+            alert.buttons[1].keyEquivalent = ""
+            NSApp.activate()
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn {
+                await app.stopEverythingOwned()
+                sender.reply(toApplicationShouldTerminate: true)
+            } else {
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainMenu.install()
@@ -28,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = PanelController(model: PanelModel(app: app))
         panel.model.openEditor = { [weak editor] id, atTestRun in editor?.show(itemID: id, atTestRun: atTestRun) }
         panel.model.openEditorNew = { [weak editor] command in editor?.showNew(command: command) }
+        let logs = LogWindowController(app: app)
+        panel.model.openLog = { [weak logs] id in logs?.show(id) }
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
         app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
         app.onOpenPanel = { [weak panel] in if panel?.isVisible == false { panel?.show() } }
@@ -44,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.app = app
         self.editor = editor
+        self.logs = logs
         self.panel = panel
         self.statusItem = statusItem
 
@@ -55,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if command == "toggle" { panel.toggle() }
                 if command.hasPrefix("editor-snapshot:") { editor.writeSnapshot(to: String(command.dropFirst("editor-snapshot:".count))) }
                 if command == "editor-close" { editor.closeWindow() }
+                if command.hasPrefix("window-snapshot:") {
+                    let parts = command.dropFirst("window-snapshot:".count).split(separator: "|", maxSplits: 1).map(String.init)
+                    if parts.count == 2, let window = NSApp.windows.first(where: { $0.title == parts[0] }) {
+                        DebugSnapshot.write(window, to: parts[1])
+                    }
+                }
+                if command.hasPrefix("window-close:") { NSApp.windows.first { $0.title == String(command.dropFirst("window-close:".count)) }?.performClose(nil) }
+                if command.hasPrefix("log:"), let item = app.items.first(where: { $0.name == String(command.dropFirst(4)) }) { logs.show(item.id) }
                 if command.hasPrefix("editor-new:") { editor.showNew(command: String(command.dropFirst("editor-new:".count))) }
                 if command == "editor-save", let id = editor.model.selectedID { editor.model.save(id) }
                 if command == "editor-revert", let id = editor.model.selectedID { editor.model.revert(id) }

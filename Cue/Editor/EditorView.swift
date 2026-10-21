@@ -524,7 +524,7 @@ private struct TimeLimitField: View {
         }
         if isCustom, case .seconds(let seconds) = limit {
             Stepper(value: Binding(get: { seconds }, set: { limit = .seconds(max(1, $0)) }), in: 1...86_400, step: 30) {
-                Text("\(DurationText.short(.seconds(seconds)))").monospacedDigit()
+                Text(verbatim: "\(DurationText.short(.seconds(seconds)))").monospacedDigit()
             }
         }
     }

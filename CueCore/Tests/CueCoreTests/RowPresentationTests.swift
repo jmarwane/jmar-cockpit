@@ -82,6 +82,14 @@ import Testing
         #expect(row(service, .on(since: nil, origin: .outside)).primary == .stopProcessOnPort(80))
     }
 
+    @Test func checkupProblemsShowWhileIdle() {
+        let task = tested(Item(kind: .task, name: "Backup", command: "./backup.sh"))
+        let row = RowPresentation.make(item: task, task: .ready, problem: "Script not found: ./backup.sh", now: now)
+        #expect(row == RowPresentation(glyph: .unknown, subtitle: "Needs attention · Script not found: ./backup.sh", primary: .edit))
+        #expect(RowPresentation.make(item: task, task: .running(since: now), problem: "x", now: now).primary == .showRunDetails)
+        #expect(RowPresentation.make(item: web, service: ServiceStatus(state: .on(since: nil, origin: .outside)), problem: "x", now: now).glyph == .on)
+    }
+
     @Test func linkRows() {
         let link = Item(kind: .link, name: "Admin", target: "http://localhost:4000/admin")
         #expect(RowPresentation.make(item: link) == RowPresentation(glyph: .link, subtitle: "localhost:4000/admin", primary: .open))

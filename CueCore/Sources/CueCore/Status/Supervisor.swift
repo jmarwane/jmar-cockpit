@@ -25,12 +25,21 @@ public actor Supervisor {
         case statusCommand(String)
     }
 
+    /// A process group Cue owns: one it started this session (`run`), or one adopted from the last session.
     private struct Owned {
-        let handle: RunHandle
+        let run: RunHandle?
+        let adopted: AdoptedProcess?
+        let processGroupID: pid_t
         let launchedAt: Date
         let check: ResolvedCheck
         /// Set when Cue itself is ending the process, so its exit isn't unexpected.
         var stopping = false
+
+        var groupIsAlive: Bool { ProcessGroup.isAlive(processGroupID) }
+
+        func terminate(grace: Duration) async -> Bool { await ProcessGroup.terminate(processGroupID, grace: grace) }
+
+        func forceKill() async -> Bool { await ProcessGroup.forceKill(processGroupID) }
     }
 
     public nonisolated let events: AsyncStream<SupervisorEvent>
@@ -44,7 +53,19 @@ public actor Supervisor {
     private var items: [UUID: Item] = [:]
     private var services: [UUID: ServiceStatus] = [:]
     private var tasks: [UUID: TaskState] = [:]
-    private var owned: [UUID: Owned] = [:]
+    private var owned: [UUID: Owned] = [:] {
+        didSet {
+            guard let registry else { return }
+            for (id, entry) in owned where oldValue[id]?.processGroupID != entry.processGroupID {
+                registry.add(itemID: id, kind: .service, pid: entry.run?.pid ?? entry.adopted?.pid ?? entry.processGroupID,
+                             processGroupID: entry.processGroupID, startedAt: entry.launchedAt)
+            }
+            for id in oldValue.keys where owned[id] == nil {
+                registry.remove(itemID: id, kind: .service)
+            }
+        }
+    }
+    private let registry: RunningRegistry?
     /// Inputs of the current or last start, so later checks resolve the same port.
     private var inputsInUse: [UUID: [String: String]] = [:]
     /// Bumped by every start, stop and failure, so a superseded loop drops its result.
@@ -54,9 +75,11 @@ public actor Supervisor {
         runner: Runner = Runner(),
         environment: [String: String],
         secrets: any SecretStore,
-        timing: Timing = .standard
+        timing: Timing = .standard,
+        registry: RunningRegistry? = nil
     ) {
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
+        self.registry = registry
         self.runner = runner
         self.environment = environment
         self.secrets = secrets
@@ -94,7 +117,7 @@ public actor Supervisor {
 
     /// The active run of a task or the process of a service Cue owns.
     public func activeRun(of id: UUID) async -> RunHandle? {
-        if let owned = owned[id], owned.handle.isActive { return owned.handle }
+        if let run = owned[id]?.run, run.isActive { return run }
         return await runner.handle(for: id)
     }
 
@@ -166,7 +189,7 @@ public actor Supervisor {
     private func perform(_ check: ResolvedCheck, for item: Item, inputs: [String: String]) async -> CheckResult {
         switch check {
         case .process:
-            return owned[item.id]?.handle.groupIsAlive == true ? .on : .off
+            return owned[item.id]?.groupIsAlive == true ? .on : .off
         case .port(let port):
             return await PortProbe.isAnswering(port: port, timeout: timing.portTimeout) ? .on : .off
         case .statusCommand(let command):
@@ -200,6 +223,20 @@ public actor Supervisor {
         if case .port(let port) = check, let holder = cueService(holding: port, other: id) {
             fail(id, Failure(message: "Port \(port) is already in use by \(holder)"))
             return
+        }
+        // A service with an address port but another kind of check: a taken port means it can't start.
+        if check != .port(addressPort(item, values) ?? -1), let port = addressPort(item, values) {
+            if let holder = cueService(holding: port, other: id) {
+                fail(id, Failure(message: "Port \(port) is already in use by \(holder)"))
+                return
+            }
+            if await PortProbe.isAnswering(port: port, timeout: timing.portTimeout) {
+                guard isCurrent(id, generation) else { return }
+                let owner = await PortOwner.lookup(port: port).first
+                guard isCurrent(id, generation) else { return }
+                fail(id, Failure(message: "Port \(port) is already in use by \(owner.map { "\($0.command) (pid \($0.pid))" } ?? "another process")"))
+                return
+            }
         }
         inputsInUse[id] = values
 
@@ -237,7 +274,7 @@ public actor Supervisor {
         }
 
         let launchedAt = Date()
-        owned[id] = Owned(handle: handle, launchedAt: launchedAt, check: check)
+        owned[id] = Owned(run: handle, adopted: nil, processGroupID: handle.process.processGroupID, launchedAt: launchedAt, check: check)
         update(id) { status in
             status.isChecking = false
             status.ownsProcess = true
@@ -265,7 +302,7 @@ public actor Supervisor {
 
         bump(id)
         var canForceStop = false
-        if let entry = owned[id], entry.handle === handle {
+        if let entry = owned[id], entry.run === handle {
             owned[id]?.stopping = true
             canForceStop = !(await handle.terminate(grace: timing.terminateGrace))
             if !canForceStop { owned[id] = nil }
@@ -277,7 +314,7 @@ public actor Supervisor {
     /// The start command or service process Cue owns has exited.
     private func ownedRunEnded(_ id: UUID, _ handle: RunHandle, _ result: RunResult) async {
         continuation.yield(.runFinished(id, result))
-        guard let entry = owned[id], entry.handle === handle else { return }
+        guard let entry = owned[id], entry.run === handle else { return }
         if entry.stopping { return }
 
         let state = services[id]?.state
@@ -333,9 +370,21 @@ public actor Supervisor {
         }
     }
 
+    /// The port in a service's address (`localhost:$PORT/admin`), if it has one.
+    func addressPort(_ item: Item, _ inputs: [String: String]) -> Int? {
+        guard let address = item.address, !address.isEmpty else { return nil }
+        let resolved = Placeholders.substitute(address, values: LaunchSpec.placeholderValues(for: item, inputs: inputs))
+        let withoutScheme = resolved.components(separatedBy: "://").last ?? resolved
+        let hostPort = withoutScheme.split(separator: "/", maxSplits: 1).first.map(String.init) ?? withoutScheme
+        guard let colon = hostPort.lastIndex(of: ":"), let port = Int(hostPort[hostPort.index(after: colon)...]),
+              (1...65535).contains(port) else { return nil }
+        return port
+    }
+
     /// The name of another service Cue is running on `port`.
     private func cueService(holding port: Int, other id: UUID) -> String? {
-        for (otherID, entry) in owned where otherID != id && entry.check == .port(port) && entry.handle.groupIsAlive {
+        for (otherID, entry) in owned where otherID != id && entry.groupIsAlive
+            && (entry.check == .port(port) || items[otherID].flatMap({ addressPort($0, inputsInUse[otherID] ?? $0.currentInputValues) }) == port) {
             return items[otherID]?.name ?? "another item"
         }
         return nil
@@ -358,7 +407,7 @@ public actor Supervisor {
             return .stopped
         }
         let entry = owned[id]
-        if case .process = item.stopBy, entry?.handle.groupIsAlive != true {
+        if case .process = item.stopBy, entry?.groupIsAlive != true {
             if case .port(let port) = check { return .notOwned(port: port) }
             return .notOwned(port: nil)
         }
@@ -373,7 +422,7 @@ public actor Supervisor {
         switch item.stopBy {
         case .process:
             owned[id]?.stopping = true
-            if let entry { await entry.handle.terminate(grace: timing.terminateGrace) }
+            if let entry { _ = await entry.terminate(grace: timing.terminateGrace) }
         case .command(let command):
             if entry != nil { owned[id]?.stopping = true }
             let result = await runOnce(command, for: item, inputs: values, timeout: timing.stopCommandTimeout)
@@ -393,8 +442,8 @@ public actor Supervisor {
             }
         }
         guard isCurrent(id, generation) else { return .stopped }
-        if let entry, !entry.handle.groupIsAlive { owned[id] = nil }
-        update(id) { $0.ownsProcess = self.owned[id]?.handle.groupIsAlive == true }
+        if let entry, !entry.groupIsAlive { owned[id] = nil }
+        update(id) { $0.ownsProcess = self.owned[id]?.groupIsAlive == true }
 
         while true {
             let result = await perform(check, for: item, inputs: values)
@@ -421,7 +470,7 @@ public actor Supervisor {
         }
 
         bump(id)
-        let canForceStop = owned[id]?.handle.groupIsAlive == true
+        let canForceStop = owned[id]?.groupIsAlive == true
         fail(id, Failure(message: Self.stillRunningMessage(check), canForceStop: canForceStop))
         return .stopped
     }
@@ -430,7 +479,7 @@ public actor Supervisor {
     @discardableResult
     public func forceStop(_ id: UUID) async -> StopOutcome {
         guard let item = items[id], item.kind == .service else { return .ignored }
-        guard let entry = owned[id], entry.handle.groupIsAlive else {
+        guard let entry = owned[id], entry.groupIsAlive else {
             if case .port(let port)? = try? resolveCheck(item, inputsInUse[id] ?? item.currentInputValues) {
                 return .notOwned(port: port)
             }
@@ -439,7 +488,7 @@ public actor Supervisor {
         let generation = bump(id)
         owned[id]?.stopping = true
         update(id) { $0.state = .stopping(since: Date()) }
-        let gone = await entry.handle.forceKill()
+        let gone = await entry.forceKill()
         guard isCurrent(id, generation) else { return .stopped }
         if gone { owned[id] = nil }
         update(id) { $0.ownsProcess = !gone }
@@ -466,6 +515,134 @@ public actor Supervisor {
         }
     }
 
+    // MARK: Stop process on port
+
+    /// Stops a process Cue doesn't own, by PID, after the user confirmed `Stop process on port 4000 (node, pid 4312)?`.
+    /// SIGTERM, then SIGKILL after the grace period, then the check decides. Never by name.
+    public func stopProcess(_ id: UUID, pid: pid_t) async {
+        guard let item = items[id], item.kind == .service, pid > 1 else { return }
+        let values = inputsInUse[id] ?? item.currentInputValues
+        guard let check = try? resolveCheck(item, values) else { return }
+        let generation = bump(id)
+        let deadline = ContinuousClock.now + timing.stopTimeout
+        update(id) { status in
+            status.isChecking = false
+            status.state = .stopping(since: Date())
+        }
+        kill(pid, SIGTERM)
+        let gone = await Self.waitForExit(of: pid, timeout: timing.terminateGrace)
+        if !gone { kill(pid, SIGKILL) }
+        guard isCurrent(id, generation) else { return }
+        while true {
+            let result = await perform(check, for: item, inputs: values)
+            guard isCurrent(id, generation) else { return }
+            if result != .on {
+                update(id) { status in
+                    status.lastCheckedAt = Date()
+                    status.state = result == .off ? .off(since: Date()) : .unknown(nil)
+                }
+                return
+            }
+            if ContinuousClock.now >= deadline { break }
+            try? await Task.sleep(for: timing.pollInterval)
+            guard isCurrent(id, generation) else { return }
+        }
+        bump(id)
+        fail(id, Failure(message: Self.stillRunningMessage(check)))
+    }
+
+    static func waitForExit(of pid: pid_t, timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while kill(pid, 0) == 0 || errno == EPERM {
+            if ContinuousClock.now >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return true
+    }
+
+    // MARK: Relaunch
+
+    /// Picks up what the last session left in running.json (spec §12). Services whose process is
+    /// still alive (same PID and start time) are `On · from last session`, owned and stoppable;
+    /// tasks that were running read `Outcome unknown`. Nothing is started or re-run.
+    public func recover() {
+        guard let registry else { return }
+        let (alive, gone) = registry.recover()
+        for entry in alive {
+            guard let item = items[entry.itemID] else {
+                registry.remove(itemID: entry.itemID, kind: entry.kind)
+                continue
+            }
+            switch entry.kind {
+            case .service where item.kind == .service:
+                let check = (try? resolveCheck(item, item.currentInputValues)) ?? .process
+                let id = entry.itemID, pid = entry.pid
+                let adopted = AdoptedProcess(pid: pid, processGroupID: entry.processGroupID) { [weak self] in
+                    Task { await self?.adoptedExited(id, pid: pid) }
+                }
+                owned[id] = Owned(run: nil, adopted: adopted, processGroupID: entry.processGroupID, launchedAt: entry.startedAt, check: check)
+                update(id) { status in
+                    status.ownsProcess = true
+                    status.state = .on(since: entry.startedAt, origin: .lastSession)
+                }
+            case .task where item.kind == .task:
+                setTask(entry.itemID, .outcomeUnknown)
+                registry.remove(itemID: entry.itemID, kind: .task)
+            default:
+                registry.remove(itemID: entry.itemID, kind: entry.kind)
+            }
+        }
+        for entry in gone where entry.kind == .task && items[entry.itemID]?.kind == .task {
+            setTask(entry.itemID, .outcomeUnknown)
+        }
+    }
+
+    /// An adopted process exited; there's no exit code to report.
+    private func adoptedExited(_ id: UUID, pid: pid_t) async {
+        guard let entry = owned[id], entry.adopted?.pid == pid, !entry.stopping else { return }
+        // The leader may linger as a zombie for a moment; children in the group keep it running.
+        guard await ProcessGroup.waitUntilGone(entry.processGroupID, timeout: .seconds(2)) else { return }
+        guard let current = owned[id], current.adopted?.pid == pid, !current.stopping else { return }
+        owned[id] = nil
+        update(id) { $0.ownsProcess = false }
+        guard case .on? = services[id]?.state, let item = items[id] else { return }
+        let generation = generations[id, default: 0]
+        if entry.check != .process {
+            let now = await perform(entry.check, for: item, inputs: inputsInUse[id] ?? item.currentInputValues)
+            guard isCurrent(id, generation) else { return }
+            if now == .on { return }
+        }
+        bump(id)
+        let failure = Failure(message: "Exited unexpectedly")
+        fail(id, failure)
+        continuation.yield(.unexpectedExit(id, failure))
+    }
+
+    /// Shows Checking on services until their next check (after waking from sleep).
+    public func markChecking(_ ids: [UUID]) {
+        for id in ids where services[id]?.state.isTransitioning == false {
+            update(id) { $0.isChecking = true }
+        }
+    }
+
+    /// Cue-owned services and tasks still running, for the quit alert.
+    public func ownedRunning() async -> (services: [UUID], tasks: [UUID]) {
+        let services = owned.filter { $0.value.groupIsAlive }.map(\.key)
+        let tasks = await runner.activeIDs.filter { items[$0]?.kind == .task }
+        return (services, tasks)
+    }
+
+    /// Quit: stop every service and task Cue owns. Services another manager runs are left alone.
+    public func stopEverythingOwned() async {
+        for (id, entry) in owned where entry.groupIsAlive {
+            owned[id]?.stopping = true
+            if await entry.terminate(grace: timing.terminateGrace) { owned[id] = nil }
+        }
+        for id in await runner.activeIDs {
+            await runner.cancel(id, grace: timing.terminateGrace)
+        }
+    }
+
     // MARK: Tasks
 
     /// Ready → Running → Done, Failed or Cancelled. Returns the run's result, or nil if it didn't start.
@@ -489,7 +666,9 @@ public actor Supervisor {
         }
 
         setTask(id, .running(since: handle.startedAt))
+        registry?.add(itemID: id, kind: .task, pid: handle.pid, processGroupID: handle.process.processGroupID, startedAt: handle.startedAt)
         let result = await handle.result()
+        registry?.remove(itemID: id, kind: .task)
         continuation.yield(.runFinished(id, result))
         switch result.ending {
         case .exited(0):

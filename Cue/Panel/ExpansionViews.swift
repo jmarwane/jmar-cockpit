@@ -20,6 +20,18 @@ struct ExpansionView: View {
                 RunDetailsView(model: model, item: item)
             case .reminderForm:
                 EmptyView()
+            case .stopOnPort(_, let port, let owner):
+                Text(verbatim: "Stop process on port \(port) (\(owner.description))?")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Palette.ink)
+                Text("Cue didn't start it. It gets SIGTERM, then SIGKILL after 5 s.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Palette.ink2)
+                HStack {
+                    Spacer()
+                    ExpansionButton("Cancel") { model.expansion = nil }
+                    ExpansionButton("Stop", key: "↵", isPrimary: true) { model.submit(expansion) }
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -76,7 +88,7 @@ private struct ConfirmView: View {
         if !values.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(values.keys.sorted(), id: \.self) { key in
-                    Text("\(key) = \(values[key] ?? "")")
+                    Text(verbatim: "\(key) = \(values[key] ?? "")")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(Palette.ink2)
                 }
@@ -117,7 +129,7 @@ private struct ErrorDetailsView: View {
                 CommandBlock(text: line, color: Palette.err)
             }
             if let reason = failure.reportedReason {
-                Text("Reported by the script: \(reason)")
+                Text(verbatim: "Reported by the script: \(reason)")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Palette.ink)
             }
@@ -130,6 +142,12 @@ private struct ErrorDetailsView: View {
                     if let details = model.app.errorDetails(for: item.id) {
                         model.app.copy(details)
                         model.showToast("Copied")
+                    }
+                }
+                if model.app.hasLog(item.id) {
+                    ExpansionButton("View Log") {
+                        model.closePanel()
+                        model.openLog(item.id)
                     }
                 }
                 ExpansionButton("Retry", key: "↵", isPrimary: true) { model.retry(item) }
@@ -155,7 +173,7 @@ private struct RunDetailsView: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
             VStack(alignment: .leading, spacing: 6) {
                 if case .running(let since)? = model.app.tasks[item.id] {
-                    Text("Running for \(RelativeText.elapsed(since: since, now: context.date))")
+                    Text(verbatim: "Running for \(RelativeText.elapsed(since: since, now: context.date))")
                         .font(.system(size: 11.5, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(Palette.ink2)

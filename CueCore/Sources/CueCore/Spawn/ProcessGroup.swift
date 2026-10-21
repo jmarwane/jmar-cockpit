@@ -61,12 +61,7 @@ public final class SpawnedProcess: Sendable {
     /// Returns once no process in the group remains, or after a final short wait.
     @discardableResult
     public func terminateGroup(grace: Duration = .seconds(5)) async -> Bool {
-        let pgid = processGroupID
-        guard ProcessGroup.isAlive(pgid) else { return true }
-        kill(-pgid, SIGTERM)
-        if await ProcessGroup.waitUntilGone(pgid, timeout: grace) { return true }
-        kill(-pgid, SIGKILL)
-        return await ProcessGroup.waitUntilGone(pgid, timeout: .seconds(2))
+        await ProcessGroup.terminate(processGroupID, grace: grace)
     }
 }
 
@@ -166,6 +161,24 @@ public enum ProcessGroup {
             pipes.forEach { output.startReading(from: $0.read, stream: $0.stream) }
         }
         return SpawnedProcess(pid: pid, output: output)
+    }
+
+    /// SIGTERM to the whole group, then SIGKILL to the group if anything is left after `grace`.
+    /// Returns true once no process in the group remains.
+    @discardableResult
+    public static func terminate(_ pgid: pid_t, grace: Duration = .seconds(5)) async -> Bool {
+        guard isAlive(pgid) else { return true }
+        kill(-pgid, SIGTERM)
+        if await waitUntilGone(pgid, timeout: grace) { return true }
+        kill(-pgid, SIGKILL)
+        return await waitUntilGone(pgid, timeout: .seconds(2))
+    }
+
+    /// SIGKILL to the whole group.
+    @discardableResult
+    public static func forceKill(_ pgid: pid_t) async -> Bool {
+        kill(-pgid, SIGKILL)
+        return await waitUntilGone(pgid, timeout: .seconds(2))
     }
 
     /// True while any process in group `pgid` exists.

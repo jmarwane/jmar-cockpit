@@ -125,3 +125,18 @@ Choices the spec doesn't make, one per line, with the reason.
 - Fired reminders don't mark the menu-bar icon: the spec ties "needs attention" to items and the library check-up.
 - Reminder times read `23:58` today, `tomorrow 9:00`, `Tue 9:00` within a week, else the date. Countdowns read `20 min`, `1 h`, `1 h 5 min`, `2 days`.
 - Debug runs with `-CueLibraryDirectory` log notifications instead of scheduling them, so testing never shows a permission prompt.
+
+## M6 · Reliability
+
+- Check schedule: a 5 s tick checks each service whose last check is 30 s old (On or Unknown) or 5 min old (everything else, Failed included). Services never checked wait for the launch check or the panel opening.
+- On wake: every service shows Checking at once (keeping its last glyph, dimmed if stale), then after 2 s all are checked; reminders are re-evaluated too.
+- running.json follows the Supervisor's owned processes automatically (any change to what it owns updates the file), plus running tasks. Entries carry the PID's kernel start time; at launch only an alive PID with the same start time is ours.
+- Relaunch: a recovered service is `On · from last session`, owned and stoppable; its exit is watched with kqueue (it isn't Cue's child, so there's no exit code: `Exited unexpectedly`). A task from the last session reads `Outcome unknown · Cue quit during the run` whether or not its process is still alive; Cue doesn't adopt or kill it.
+- Port conflicts: a service with a port check that already answers stays `On · started outside Cue` (§3). A service with another check but a port in its address refuses to start while that port answers: `Port 4000 is already in use by node (pid 4312)`, or the Cue item's name when Cue runs it.
+- Stop process on port: looks up the listener with lsof, asks `Stop process on port 4000 (node, pid 4312)?` inline, then SIGTERM to that PID, SIGKILL after 5 s, then the check decides. Never by name, never a process group Cue doesn't own.
+- Notifications are silent (only reminders make a sound): every transition into Failed (an unexpected exit is one of them, so it notifies once), and a task that exited 0 after more than 5 s while the panel was closed. Clicking one opens the panel.
+- History: every finished run of a saved item (tasks, start and stop commands) is a JSON record in `runs/<itemID>/`, with a `.log` of the redacted output when Keep output is on; only the newest 20 are kept. Removing an item deletes its history. Run-once commands aren't recorded.
+- View Log shows the live output while running, else the newest kept log, else the output attached to the last failure or Done. Reveal in Finder selects the log file.
+- Launch check-up (also after every save): missing folder, missing or non-executable script, or a program not on PATH shows `Needs attention · <problem>` while the item is idle (dashed-ring glyph, click opens the editor) and marks the icon. Commands starting with `$VAR` aren't checked.
+- Quit: the alert lists Cue-owned services by name and counts tasks (`Splash Server and 1 task are still running`), says which On services another manager runs and will keep running, and defaults to Cancel. Stop and Quit stops Cue-owned groups and cancels tasks, then quits. ⌘Q works while the panel or a Cue window is key; Settings gets a Quit button in M7.
+- Text built from values uses `Text(verbatim:)`: SwiftUI otherwise formats numbers with the locale's grouping (`port 4 917`) and renders Markdown in script output.

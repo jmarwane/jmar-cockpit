@@ -9,6 +9,8 @@ protocol ReminderNotifying: AnyObject {
     var onAction: (_ reminderID: UUID, _ action: ReminderNotifications.Action) -> Void { get set }
     func schedule(_ reminder: Reminder)
     func cancel(_ reminder: Reminder)
+    /// A silent notification about an item: a failure, or a task that finished while the panel was closed.
+    func post(title: String, body: String, itemID: UUID)
 }
 
 @MainActor
@@ -22,6 +24,7 @@ final class ReminderNotifications: NSObject, ReminderNotifying, UNUserNotificati
 
     var onAction: (UUID, Action) -> Void = { _, _ in }
     var onDenied: () -> Void = {}
+    var onOpenPanel: () -> Void = {}
     private let center = UNUserNotificationCenter.current()
     private var askedForPermission = false
 
@@ -59,6 +62,19 @@ final class ReminderNotifications: NSObject, ReminderNotifying, UNUserNotificati
         }
     }
 
+    func post(title: String, body: String, itemID: UUID) {
+        Task {
+            guard await ensurePermission() else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            // Silent: only reminders make a sound.
+            content.userInfo = ["itemID": itemID.uuidString]
+            let request = UNNotificationRequest(identifier: "cue.item.\(itemID.uuidString).\(UUID().uuidString)", content: content, trigger: nil)
+            try? await center.add(request)
+        }
+    }
+
     func cancel(_ reminder: Reminder) {
         center.removePendingNotificationRequests(withIdentifiers: [reminder.notificationID])
         center.removeDeliveredNotifications(withIdentifiers: [reminder.notificationID])
@@ -89,7 +105,11 @@ final class ReminderNotifications: NSObject, ReminderNotifying, UNUserNotificati
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        guard let text = response.notification.request.content.userInfo[Self.idKey] as? String, let id = UUID(uuidString: text) else { return }
+        guard let text = response.notification.request.content.userInfo[Self.idKey] as? String, let id = UUID(uuidString: text) else {
+            // An item notification: open the panel.
+            await MainActor.run { self.onOpenPanel() }
+            return
+        }
         let action: Action = switch response.actionIdentifier {
         case Self.snoozeAction: .snooze
         case Self.doneAction: .done
@@ -105,4 +125,5 @@ final class LoggedReminderNotifications: ReminderNotifying {
     var onAction: (UUID, ReminderNotifications.Action) -> Void = { _, _ in }
     func schedule(_ reminder: Reminder) { appLog.notice("would schedule reminder \(reminder.text, privacy: .public) at \(reminder.due, privacy: .public)") }
     func cancel(_ reminder: Reminder) { appLog.notice("would cancel reminder \(reminder.text, privacy: .public)") }
+    func post(title: String, body: String, itemID: UUID) { appLog.notice("would notify: \(title, privacy: .public) — \(body, privacy: .public)") }
 }

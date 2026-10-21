@@ -30,6 +30,8 @@ public enum PrimaryAction: Sendable, Equatable {
     case openEditorAtTestRun
     /// `sudo` needs a password prompt, so it runs in Terminal instead.
     case runInTerminal
+    /// The launch check-up found a problem (missing folder, script or program): fix it in the editor.
+    case edit
     case open
     /// Starting, Stopping, Checking: the click is ignored.
     case none
@@ -46,6 +48,7 @@ public enum PrimaryAction: Sendable, Equatable {
         case .check: "Check Status"
         case .openEditorAtTestRun: "Test Run…"
         case .runInTerminal: "Run in Terminal"
+        case .edit: "Edit…"
         case .open: "Open"
         case .none: ""
         }
@@ -61,6 +64,7 @@ public enum PrimaryAction: Sendable, Equatable {
         case .check: "arrow.clockwise"
         case .openEditorAtTestRun: "hammer"
         case .runInTerminal: "apple.terminal"
+        case .edit: "pencil"
         case .open: "arrow.up.right"
         case .none: nil
         }
@@ -81,15 +85,38 @@ public struct RowPresentation: Sendable, Equatable {
         self.primary = primary
     }
 
-    public static func make(item: Item, service: ServiceStatus? = nil, task: TaskState? = nil, now: Date = Date()) -> RowPresentation {
+    /// `problem` is what the launch check-up found; it shows while the item is idle.
+    public static func make(item: Item, service: ServiceStatus? = nil, task: TaskState? = nil, problem: String? = nil, now: Date = Date()) -> RowPresentation {
         switch item.kind {
         case .link:
             return RowPresentation(glyph: .link, subtitle: LinkTarget.display(item.target), primary: .open)
         case .service:
-            return serviceRow(item, service ?? ServiceStatus(), now: now)
+            let status = service ?? ServiceStatus()
+            if let problem, Self.isIdle(status.state) { return needsAttention(problem) }
+            return serviceRow(item, status, now: now)
         case .task:
-            return taskRow(item, task ?? .ready, now: now)
+            let state = task ?? .ready
+            if let problem, Self.isIdle(state) { return needsAttention(problem) }
+            return taskRow(item, state, now: now)
         }
+    }
+
+    static func isIdle(_ state: ServiceState) -> Bool {
+        switch state {
+        case .off, .unknown(nil): true
+        default: false
+        }
+    }
+
+    static func isIdle(_ state: TaskState) -> Bool {
+        switch state {
+        case .ready, .done, .cancelled: true
+        default: false
+        }
+    }
+
+    private static func needsAttention(_ problem: String) -> RowPresentation {
+        RowPresentation(glyph: .unknown, subtitle: "Needs attention · \(problem)", primary: .edit)
     }
 
     private static func serviceRow(_ item: Item, _ status: ServiceStatus, now: Date) -> RowPresentation {

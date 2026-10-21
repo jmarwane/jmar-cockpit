@@ -20,6 +20,10 @@ final class AppModel {
     private(set) var activeRuns: [UUID: RunHandle] = [:]
     /// Commands run once without saving. Kept in memory only; gone when dismissed or when Cue quits.
     private(set) var recent: [Item] = []
+    /// What the launch check-up found per item: a missing folder, script or program.
+    private(set) var problems: [UUID: String] = [:]
+    /// Set by the panel; finished-task notifications only go out while it's closed.
+    var isPanelOpen = false
 
     /// Called with each toast-worthy message; the panel shows it.
     var onToast: (String) -> Void = { _ in }
@@ -28,7 +32,9 @@ final class AppModel {
     let store: LibraryStore
     let supervisor: Supervisor
     let secrets: any SecretStore
+    let history: RunHistory
     private let notifications: any ReminderNotifying
+    private var checkTimer: Timer?
     private var reminderTimer: Timer?
     private var loadedFileDate: Date?
     private var environmentReady: Task<Void, Never>?
@@ -41,9 +47,13 @@ final class AppModel {
         self.store = store
         self.secrets = secrets
         self.notifications = notifications
+        history = RunHistory(directory: store.directory.appendingPathComponent("runs", isDirectory: true))
         var fallback = ProcessInfo.processInfo.environment
         fallback["PATH"] = LoginShellEnvironment.defaultPATH
-        supervisor = Supervisor(environment: fallback, secrets: secrets)
+        supervisor = Supervisor(
+            environment: fallback, secrets: secrets,
+            registry: RunningRegistry(fileURL: store.directory.appendingPathComponent("running.json"))
+        )
 
         reload()
         environmentReady = Task {
@@ -51,19 +61,78 @@ final class AppModel {
             appLog.notice("environment captured via \(captured.source.rawValue, privacy: .public)")
             await supervisor.setEnvironment(captured.variables)
             self.environment = captured
+            runCheckup()
         }
         Task { await consumeEvents() }
+        // Relaunch (spec §12): adopt what the last session still owns, then check everything again.
+        // Saved states are never shown as current, and nothing is started or re-run.
+        let items = library.items
+        Task {
+            await supervisor.setItems(items)
+            await supervisor.recover()
+            await whenReady()
+            checkAllServices()
+        }
+        startCheckSchedule()
 
         notifications.onAction = { [weak self] id, action in self?.handleNotification(id, action) }
         if let real = notifications as? ReminderNotifications {
             real.onDenied = { [weak self] in self?.onToast("Notifications are off for Cue; reminders show only here") }
+            real.onOpenPanel = { [weak self] in self?.onOpenPanel() }
         }
         // Anything that came due while Cue wasn't running is "Was due"; pending ones are scheduled again.
         refreshReminders()
         library.reminders.filter { $0.state == .pending }.forEach(notifications.schedule)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshReminders() }
+            MainActor.assumeIsolated { self?.didWake() }
         }
+    }
+
+    // MARK: Check schedule (spec §9)
+
+    /// Every 30 s for services that are On or Unknown, every 5 min for the rest.
+    private func startCheckSchedule() {
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkDueServices() }
+        }
+        timer.tolerance = 1
+        RunLoop.main.add(timer, forMode: .common)
+        checkTimer = timer
+    }
+
+    private func checkDueServices() {
+        let now = Date()
+        for item in library.items where item.kind == .service {
+            guard let status = services[item.id], !status.isChecking, !status.state.isTransitioning,
+                  let last = status.lastCheckedAt else { continue }
+            let interval: TimeInterval = switch status.state {
+            case .on, .unknown: 30
+            default: 300
+            }
+            if now.timeIntervalSince(last) >= interval { check(item.id) }
+        }
+    }
+
+    /// On wake: show Checking, wait 2 s for the network to settle, then check every service.
+    private func didWake() {
+        refreshReminders()
+        let ids = library.items.filter { $0.kind == .service }.map(\.id)
+        Task {
+            await supervisor.markChecking(ids)
+            try? await Task.sleep(for: .seconds(2))
+            checkAllServices()
+        }
+    }
+
+    /// The launch check-up: a missing folder, script or program marks the item as needing attention.
+    func runCheckup() {
+        let path = commandPath
+        var found: [UUID: String] = [:]
+        for item in library.items {
+            if let problem = LibraryCheckup.problem(for: item, path: path) { found[item.id] = problem }
+        }
+        problems = found
+        updateIcon()
     }
 
     /// Opens the panel when a reminder notification is clicked.
@@ -170,6 +239,7 @@ final class AppModel {
         }
         save()
         reconcileStatuses()
+        runCheckup()
     }
 
     /// Removes an item and its Keychain secrets. Refused while Cue is running it.
@@ -182,6 +252,7 @@ final class AppModel {
             }
         }
         library.items.removeAll { $0.id == id }
+        history.forget(id)
         save()
         reconcileStatuses()
     }
@@ -386,7 +457,7 @@ final class AppModel {
     // MARK: Status
 
     func presentation(for item: Item, now: Date = Date()) -> RowPresentation {
-        RowPresentation.make(item: item, service: services[item.id], task: tasks[item.id], now: now)
+        RowPresentation.make(item: item, service: services[item.id], task: tasks[item.id], problem: problems[item.id], now: now)
     }
 
     /// True when the glyph shows an old result: last check over 30 s ago and a new one not in yet.
@@ -399,8 +470,12 @@ final class AppModel {
         for await event in supervisor.events {
             switch event {
             case .service(let id, let status):
+                if case .failed(let failure) = status.state, services[id].map({ if case .failed = $0.state { false } else { true } }) ?? true {
+                    notifyFailure(id, failure)
+                }
                 services[id] = status
             case .task(let id, let state):
+                if case .failed(let failure) = state, tasks[id] != state { notifyFailure(id, failure) }
                 tasks[id] = state
                 if state.isRunning {
                     activeRuns[id] = await supervisor.activeRun(of: id)
@@ -409,15 +484,85 @@ final class AppModel {
                 }
             case .unexpectedExit(let id, let failure):
                 appLog.notice("unexpected exit \(id, privacy: .public): \(failure.message, privacy: .public)")
-            case .runFinished:
-                break
+            case .runFinished(let id, let run):
+                recordRun(id, run)
             }
             updateIcon()
         }
     }
 
+    // MARK: Notifications and history
+
+    private func notifyFailure(_ id: UUID, _ failure: Failure) {
+        guard let item = item(id) else { return }
+        var body = failure.message
+        if let reason = failure.reportedReason { body += " · \(reason)" } else if let line = failure.errorLine { body += "\n\(line)" }
+        notifications.post(title: "\(item.name) failed", body: body, itemID: id)
+    }
+
+    /// Keeps the run in history; a task that took over 5 s and finished while the panel was closed gets a notification.
+    private func recordRun(_ id: UUID, _ run: RunResult) {
+        guard let item = item(id) else { return }
+        if !isRecent(id) {
+            do {
+                try history.record(run, itemID: id, keepOutput: item.keepOutput)
+            } catch {
+                appLog.error("history: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if item.kind == .task, run.exitedZero, !isPanelOpen, run.duration > 5 {
+            notifications.post(title: "\(item.name) · Done", body: run.result ?? "Finished in \(DurationText.short(.seconds(run.duration)))", itemID: id)
+        }
+    }
+
+    /// The text for View Log: the live output while running, else the newest kept log, else the failure's output.
+    func logText(for id: UUID) -> String? {
+        if let run = activeRuns[id] { return run.output.text }
+        if let url = history.latestLog(for: id), let text = try? String(contentsOf: url, encoding: .utf8) { return text }
+        switch (services[id]?.state, tasks[id]) {
+        case (.failed(let failure)?, _): return failure.run?.output
+        case (_, .failed(let failure)?): return failure.run?.output
+        case (_, .done(let run)?): return run.output
+        default: return nil
+        }
+    }
+
+    func hasLog(_ id: UUID) -> Bool { logText(for: id).map { !$0.isEmpty } ?? false }
+
+    func clearHistory() {
+        do {
+            try history.clear()
+            onToast("History cleared")
+        } catch {
+            onToast("Couldn't clear history: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: Quit
+
+    /// `Splash Server and 1 task are still running`, or nil when Cue owns nothing running.
+    func runningSummary() async -> (message: String, managedElsewhere: [String])? {
+        let owned = await supervisor.ownedRunning()
+        let serviceNames = owned.services.compactMap { item($0)?.name }
+        let taskCount = owned.tasks.count
+        guard !serviceNames.isEmpty || taskCount > 0 else { return nil }
+        var parts = serviceNames
+        if taskCount > 0 { parts.append(taskCount == 1 ? "1 task" : "\(taskCount) tasks") }
+        let joined = parts.count > 1 ? parts.dropLast().joined(separator: ", ") + " and " + parts.last! : parts[0]
+        let verb = parts.count == 1 && taskCount <= 1 ? "is" : "are"
+        let managed = library.items.filter { item in
+            guard item.kind == .service, case .command = item.stopBy, services[item.id]?.state.isOn == true else { return false }
+            return !owned.services.contains(item.id)
+        }.map(\.name)
+        return ("\(joined) \(verb) still running", managed)
+    }
+
+    func stopEverythingOwned() async {
+        await supervisor.stopEverythingOwned()
+    }
+
     var iconState: MenuBarIcon.State {
-        let needsAttention = loadError != nil
+        let needsAttention = loadError != nil || !problems.isEmpty
             || services.values.contains { status in
                 switch status.state {
                 case .failed: true
@@ -473,6 +618,10 @@ final class AppModel {
                 onToast("Cue didn't start it and it has no stop command")
             }
         }
+    }
+
+    func stopProcess(_ id: UUID, pid: pid_t) {
+        Task { await supervisor.stopProcess(id, pid: pid) }
     }
 
     func forceStop(_ id: UUID) {
