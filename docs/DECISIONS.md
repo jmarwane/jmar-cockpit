@@ -112,3 +112,16 @@ Choices the spec doesn't make, one per line, with the reason.
 - Needs Terminal: an idle item whose command contains the word `sudo` shows `Needs Terminal`, and its click runs it in Terminal. Failures and running states still show first.
 - Run in Terminal: `cd '<folder>' && export K=v; … <command>` via AppleScript `do script`; plain environment variables and inputs are exported (shell-quoted); secrets never are, since they'd land in the terminal history. Every task/service also gets Run in Terminal in ⌘K.
 - `NSAppleEventsUsageDescription` added for the Automation permission.
+
+## M5 · Reminders
+
+- Open question §19 (reminders on the iPhone?): took the default, in-app only. You weren't available to ask.
+- A reminder becomes fired when Cue notices its time: on time (within 60 s) it reads `Fired at 23:58`; noticed later (Mac asleep, Cue not running) it reads `Was due 14:00`. Cue checks at launch, on wake, and with a timer for the next due time. macOS doesn't tell a background app when a notification is delivered, so this is the honest signal.
+- Notifications use a calendar trigger at the due time, with the default sound, actions Snooze 10 min and Done; clicking the notification opens the panel. Pending reminders are re-scheduled at launch (same identifier, so no duplicates).
+- Permission is asked the first time a reminder is scheduled; if it's denied, a toast says reminders show only in the panel.
+- Snooze makes the reminder pending again, due in 10 minutes. Done (notification), a click on a fired reminder, Dismiss or Cancel Reminder (⌘K) removes it.
+- The New Reminder row shows only while the search is empty; the selection starts on the first item, not on New Reminder, so ↵ on open does what it did before.
+- In the form, the due time is: a picked chip, else a time phrase typed in the text, else the time being kept. Set is disabled until there's one; a typed phrase is removed from the saved text.
+- Fired reminders don't mark the menu-bar icon: the spec ties "needs attention" to items and the library check-up.
+- Reminder times read `23:58` today, `tomorrow 9:00`, `Tue 9:00` within a week, else the date. Countdowns read `20 min`, `1 h`, `1 h 5 min`, `2 days`.
+- Debug runs with `-CueLibraryDirectory` log notifications instead of scheduling them, so testing never shows a permission prompt.

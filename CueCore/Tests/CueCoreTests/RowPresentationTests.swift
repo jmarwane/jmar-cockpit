@@ -101,6 +101,8 @@ import Testing
         #expect(RelativeText.countdown(to: now.addingTimeInterval(1199.6), now: now) == "20 min")
         #expect(RelativeText.countdown(to: now.addingTimeInterval(1140.2), now: now) == "19 min")
         #expect(RelativeText.countdown(to: now.addingTimeInterval(3900), now: now) == "1 h 5 min")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(3599), now: now) == "1 h")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(3540), now: now) == "59 min")
         #expect(RelativeText.countdown(to: now.addingTimeInterval(86_400 * 2), now: now) == "2 days")
     }
 }

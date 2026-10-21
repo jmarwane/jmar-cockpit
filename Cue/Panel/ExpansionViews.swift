@@ -18,6 +18,8 @@ struct ExpansionView: View {
                 ErrorDetailsView(model: model, item: item)
             case .runDetails:
                 RunDetailsView(model: model, item: item)
+            case .reminderForm:
+                EmptyView()
             }
         }
         .padding(.horizontal, 12)

@@ -68,6 +68,7 @@ struct PanelRootView: View {
         let rows = model.visibleRows
         let recent = model.visibleRecent
         let count = rows.count + recent.count + (model.addRowVisible ? 1 : 0)
+            + model.visibleReminders.count + (model.showsNewReminderRow && !model.rows.isEmpty ? 1 : 0)
         if count == 0 {
             if let error = model.app.loadError {
                 message(error)
@@ -91,11 +92,24 @@ struct PanelRootView: View {
     private func list(_ rows: [Item]) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             VStack(spacing: 0) {
+                if model.showsNewReminderRow {
+                    newReminderRow(now: context.date)
+                }
                 ForEach(rows) { item in
                     row(item, now: context.date)
                 }
                 if model.addRowVisible {
                     addRow(now: context.date)
+                    if model.expansion == .reminderForm(PanelModel.addRowID) {
+                        ReminderFormView(model: model, rowID: PanelModel.addRowID)
+                    }
+                }
+                let reminders = model.visibleReminders
+                if !reminders.isEmpty {
+                    groupLabel("Upcoming")
+                    ForEach(reminders) { reminder in
+                        reminderRow(reminder, now: context.date)
+                    }
                 }
                 let recent = model.visibleRecent
                 if !recent.isEmpty {
@@ -106,6 +120,55 @@ struct PanelRootView: View {
                 }
             }
             .padding(Metrics.listInset)
+        }
+    }
+
+    private func selectable<Label: View>(_ id: UUID, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
+        let isSelected = model.selection == id
+        return Button(action: action) {
+            label()
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: Metrics.selectionRadius, style: .continuous)
+                            .fill(Palette.ink.opacity(0.075))
+                            .matchedGeometryEffect(id: "selection", in: selectionSpace)
+                    }
+                }
+        }
+        .buttonStyle(RowButtonStyle())
+        .onContinuousHover { phase in
+            if case .active = phase { withAnimation(.easeOut(duration: 0.14)) { model.hover(id: id) } }
+        }
+        .id(id)
+    }
+
+    @ViewBuilder private func newReminderRow(now: Date) -> some View {
+        let id = PanelModel.newReminderRowID
+        selectable(id, action: { model.selection = id; model.activateNewReminderRow() }) {
+            ReminderRowView(
+                title: "New Reminder",
+                presentation: RowPresentation(glyph: .chevron, subtitle: ReminderBook.summary(model.app.reminders, now: now), primary: .none),
+                isSelected: model.selection == id,
+                actionSymbol: "plus"
+            )
+        }
+        if model.expansion == .reminderForm(id) {
+            ReminderFormView(model: model, rowID: id)
+        }
+    }
+
+    @ViewBuilder private func reminderRow(_ reminder: Reminder, now: Date) -> some View {
+        let presentation = ReminderBook.presentation(reminder, now: now)
+        selectable(reminder.id, action: { model.activateReminder(reminder) }) {
+            ReminderRowView(
+                title: reminder.text,
+                presentation: presentation,
+                isSelected: model.selection == reminder.id,
+                actionSymbol: reminder.state == .pending ? "pencil" : "checkmark"
+            )
+        }
+        if model.expansion == .reminderForm(reminder.id) {
+            ReminderFormView(model: model, rowID: reminder.id)
         }
     }
 
@@ -194,7 +257,13 @@ struct PanelRootView: View {
                 .truncationMode(.tail)
                 .animation(.easeOut(duration: 0.15), value: model.toast)
             Spacer(minLength: 8)
-            if model.selection == PanelModel.addRowID, model.addRowVisible {
+            if let label = model.reminderFooterLabel, model.expansion.map({ if case .reminderForm = $0 { true } else { false } }) == true {
+                HStack(spacing: 5) {
+                    Text(label)
+                    KeyChip("↵")
+                }
+                .lineLimit(1)
+            } else             if model.selection == PanelModel.addRowID, model.addRowVisible {
                 HStack(spacing: 5) {
                     Text(model.addRowFooterLabel)
                     KeyChip("↵")
@@ -208,6 +277,22 @@ struct PanelRootView: View {
                     }
                 }
                 .buttonStyle(.plain)
+            } else if let label = model.reminderFooterLabel {
+                HStack(spacing: 5) {
+                    Text(label)
+                    KeyChip("↵")
+                }
+                .lineLimit(1)
+                if model.selection != PanelModel.newReminderRowID {
+                    Rectangle().fill(Palette.ink2.opacity(0.3)).frame(width: 1, height: 14)
+                    Button { model.presentActions() } label: {
+                        HStack(spacing: 5) {
+                            Text("Actions")
+                            KeyChip("⌘K")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
             } else if let item = model.selectedItem {
                 let primary = model.app.presentation(for: item).primary
                 if primary != .none {

@@ -195,16 +195,14 @@ public enum RelativeText {
     /// `12 min`, `1 h 5 min`, `2 days`, for reminders.
     public static func countdown(to date: Date, now: Date = Date()) -> String {
         let seconds = max(0, Int(date.timeIntervalSince(now).rounded()))
-        switch seconds {
-        case ..<60: return "\(seconds) s"
-        case ..<3600: return "\((seconds + 59) / 60) min"
-        case ..<86_400:
-            let minutes = (seconds % 3600) / 60
-            return minutes == 0 ? "\(seconds / 3600) h" : "\(seconds / 3600) h \(minutes) min"
-        default:
-            let days = seconds / 86_400
-            return days == 1 ? "1 day" : "\(days) days"
+        if seconds < 60 { return "\(seconds) s" }
+        let minutes = (seconds + 59) / 60
+        if minutes < 60 { return "\(minutes) min" }
+        if minutes < 24 * 60 {
+            return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
         }
+        let days = seconds / 86_400
+        return days == 1 ? "1 day" : "\(days) days"
     }
 
     /// `42s`, `4m`, `1h 5m`.

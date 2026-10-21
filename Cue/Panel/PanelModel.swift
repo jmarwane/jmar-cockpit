@@ -10,10 +10,12 @@ enum Expansion: Equatable {
     case confirm(UUID, inputs: [String: String])
     case error(UUID)
     case runDetails(UUID)
+    /// The reminder form, under the New Reminder row, the add row, or the reminder being changed.
+    case reminderForm(UUID)
 
     var itemID: UUID {
         switch self {
-        case .inputs(let id), .confirm(let id, _), .error(let id), .runDetails(let id): id
+        case .inputs(let id), .confirm(let id, _), .error(let id), .runDetails(let id), .reminderForm(let id): id
         }
     }
 }
@@ -49,6 +51,16 @@ final class PanelModel {
 
     /// The add row's selection ID; it isn't an item.
     static let addRowID = UUID()
+    /// The built-in New Reminder row, first in the list.
+    static let newReminderRowID = UUID()
+
+    /// The reminder form's text, and the due time a chip picked.
+    var reminderText = ""
+    var reminderChip: Date?
+    /// Which chip was picked, so it stays highlighted while the chips' times move with the clock.
+    var reminderChipLabel: String?
+    /// The time of the reminder being changed, offered as the `Keep` chip.
+    private(set) var reminderKeep: Date?
     /// Set by the + button and by drops: show the add row even when something matches.
     var forceAddRow = false
     /// Set by Tab: the type the user chose instead of the guess.
@@ -122,6 +134,16 @@ final class PanelModel {
         }
     }
 
+    /// Reminders, soonest first; matched on their text while searching.
+    var visibleReminders: [Reminder] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return app.reminders }
+        return app.reminders.filter { $0.text.localizedCaseInsensitiveContains(needle) }
+    }
+
+    /// The New Reminder row shows while the search is empty.
+    var showsNewReminderRow: Bool { query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
     /// Commands run once, matching the search too.
     var visibleRecent: [Item] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -133,7 +155,8 @@ final class PanelModel {
 
     /// Everything ↑ and ↓ move through, top to bottom.
     var selectableIDs: [UUID] {
-        visibleRows.map(\.id) + (addRowVisible ? [Self.addRowID] : []) + visibleRecent.map(\.id)
+        (showsNewReminderRow ? [Self.newReminderRowID] : []) + visibleRows.map(\.id) + (addRowVisible ? [Self.addRowID] : [])
+            + visibleReminders.map(\.id) + visibleRecent.map(\.id)
     }
 
     private func keepSelectionVisible() {
@@ -144,7 +167,12 @@ final class PanelModel {
             if addRowVisible, visibleRows.isEmpty, selection != Self.addRowID { self.selection = Self.addRowID }
             return
         }
-        selection = addRowVisible && visibleRows.isEmpty ? Self.addRowID : ids.first
+        if addRowVisible && visibleRows.isEmpty {
+            selection = Self.addRowID
+        } else {
+            // Start on the first item rather than New Reminder, so ↵ does what the list is for.
+            selection = visibleRows.first?.id ?? ids.first
+        }
     }
 
     // MARK: Quick add
@@ -201,7 +229,71 @@ final class PanelModel {
                 openEditor(item.id, true)
             }
         case .reminder:
-            showToast("Reminders arrive in the next milestone")
+            let reminder = addGuess.reminder
+            if let due = reminder.due {
+                app.addReminder(text: reminder.text, due: due)
+                clearQuery()
+                showToast("Set for \(ReminderBook.clock(due, now: Date()))")
+            } else {
+                openReminderForm(under: Self.addRowID, text: text, keep: nil)
+            }
+        }
+    }
+
+    // MARK: Reminders
+
+    func openReminderForm(under rowID: UUID, text: String, keep: Date?) {
+        reminderText = text
+        reminderChip = nil
+        reminderChipLabel = nil
+        reminderKeep = keep
+        selection = rowID
+        expansion = .reminderForm(rowID)
+    }
+
+    /// The form's due time: a picked chip, else a time typed in the text, else the one being kept.
+    var reminderDraftDue: Date? {
+        reminderChip ?? ReminderParser.parse(reminderText).due ?? reminderKeep
+    }
+
+    func submitReminderForm(_ rowID: UUID) {
+        guard let due = reminderDraftDue else {
+            showToast("Pick a time")
+            return
+        }
+        let parsed = ReminderParser.parse(reminderText)
+        let text = parsed.due != nil && reminderChip == nil ? parsed.text : reminderText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if app.reminder(rowID) != nil {
+            app.updateReminder(rowID, text: text, due: due)
+        } else {
+            app.addReminder(text: text, due: due)
+        }
+        expansion = nil
+        if rowID == Self.addRowID { clearQuery() }
+        showToast("Set for \(ReminderBook.clock(due, now: Date()))")
+    }
+
+    /// A click on a reminder: change it while pending, dismiss it once fired.
+    func activateReminder(_ reminder: Reminder) {
+        selection = reminder.id
+        if let expansion, expansion.itemID != reminder.id { self.expansion = nil }
+        switch reminder.state {
+        case .pending:
+            if expansion == .reminderForm(reminder.id) {
+                expansion = nil
+            } else {
+                openReminderForm(under: reminder.id, text: reminder.text, keep: reminder.due)
+            }
+        case .fired:
+            app.dismissReminder(reminder.id)
+        }
+    }
+
+    func activateNewReminderRow() {
+        if expansion == .reminderForm(Self.newReminderRowID) {
+            expansion = nil
+        } else {
+            openReminderForm(under: Self.newReminderRowID, text: "", keep: nil)
         }
     }
 
@@ -319,11 +411,21 @@ final class PanelModel {
 
     /// Hovering selects, but only when the pointer really moved: a resting pointer over a
     /// re-rendered row mustn't pull the selection back from the arrow keys.
-    func hover(_ item: Item) {
+    func hover(_ item: Item) { hover(id: item.id) }
+
+    func hover(id: UUID) {
         let pointer = NSEvent.mouseLocation
-        guard pointer != pointerAtLastSelection, selection != item.id, expansion == nil else { return }
+        guard pointer != pointerAtLastSelection, selection != id, expansion == nil else { return }
         pointerAtLastSelection = pointer
-        selection = item.id
+        selection = id
+    }
+
+    /// The footer's label for New Reminder and reminder rows, or nil for other rows.
+    var reminderFooterLabel: String? {
+        if let expansion, case .reminderForm = expansion, expansion.itemID == selection { return "Set" }
+        if selection == Self.newReminderRowID { return "New Reminder" }
+        guard let selection, let reminder = app.reminder(selection) else { return nil }
+        return reminder.state == .pending ? "Change" : "Dismiss"
     }
 
     func moveSelection(by offset: Int) {
@@ -343,6 +445,10 @@ final class PanelModel {
             submit(expansion)
         } else if selection == Self.addRowID {
             activateAddRow()
+        } else if selection == Self.newReminderRowID {
+            activateNewReminderRow()
+        } else if let selection, let reminder = app.reminder(selection) {
+            activateReminder(reminder)
         } else if let item = selectedItem {
             activate(item)
         }
@@ -409,6 +515,10 @@ final class PanelModel {
 
     /// ↵ inside an expansion.
     func submit(_ expansion: Expansion) {
+        if case .reminderForm(let rowID) = expansion {
+            submitReminderForm(rowID)
+            return
+        }
         guard let item = app.item(expansion.itemID) else { return }
         switch expansion {
         case .inputs:
@@ -422,7 +532,7 @@ final class PanelModel {
             begin(item, inputs: values)
         case .error:
             retry(item)
-        case .runDetails:
+        case .runDetails, .reminderForm:
             break
         }
     }
@@ -449,6 +559,18 @@ final class PanelModel {
     func presentActions() {
         if selection == Self.addRowID, addRowVisible {
             showActionsMenu(addRowActions())
+            return
+        }
+        if let selection, let reminder = app.reminder(selection) {
+            var actions = [MenuAction(title: reminder.state == .pending ? "Change…" : "Dismiss", keyEquivalent: "\r") { [weak self] in
+                self?.activateReminder(reminder)
+            }]
+            if reminder.state == .pending {
+                actions.append(MenuAction(title: "Cancel Reminder") { [weak self] in self?.app.dismissReminder(reminder.id) })
+            } else {
+                actions.append(MenuAction(title: "Snooze 10 min") { [weak self] in self?.app.snoozeReminder(reminder.id) })
+            }
+            showActionsMenu(actions)
             return
         }
         guard let item = selectedItem else { return }
@@ -560,6 +682,16 @@ extension PanelModel {
             query = argument
         case "click":
             if let item = (rows + app.recent).first(where: { $0.name == argument }) { activate(item) }
+            if let reminder = app.reminders.first(where: { $0.text == argument }) { activateReminder(reminder) }
+            if argument == "New Reminder" { activateNewReminderRow() }
+        case "remind":
+            reminderText = argument
+        case "chip":
+            if let index = Int(argument) {
+                let chip = ReminderBook.chips(now: Date())[index]
+                reminderChip = chip.due
+                reminderChipLabel = chip.label
+            }
         case "tab":
             if addRowVisible { cycleAddKind() }
         case "plus":

@@ -13,21 +13,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainMenu.install()
         var store = LibraryStore()
         var secrets: any SecretStore = KeychainSecretStore()
+        var notifications: any ReminderNotifying = ReminderNotifications()
         #if DEBUG
         // Debug aid: `-CueLibraryDirectory <dir>` reads and writes a fixture library instead of the real one,
         // with secrets kept in memory so testing never touches the login Keychain.
         if let directory = UserDefaults.standard.string(forKey: "CueLibraryDirectory") {
             store = LibraryStore(directory: URL(fileURLWithPath: directory, isDirectory: true))
             secrets = InMemorySecretStore()
+            notifications = LoggedReminderNotifications()
         }
         #endif
-        let app = AppModel(store: store, secrets: secrets)
+        let app = AppModel(store: store, secrets: secrets, notifications: notifications)
         let editor = EditorWindowController(model: EditorModel(app: app))
         let panel = PanelController(model: PanelModel(app: app))
         panel.model.openEditor = { [weak editor] id, atTestRun in editor?.show(itemID: id, atTestRun: atTestRun) }
         panel.model.openEditorNew = { [weak editor] command in editor?.showNew(command: command) }
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
         app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
+        app.onOpenPanel = { [weak panel] in if panel?.isVisible == false { panel?.show() } }
         statusItem.onDrop = { [weak panel] urls, text in
             guard let panel else { return }
             if !panel.isVisible { panel.show() }

@@ -28,12 +28,19 @@ final class AppModel {
     let store: LibraryStore
     let supervisor: Supervisor
     let secrets: any SecretStore
+    private let notifications: any ReminderNotifying
+    private var reminderTimer: Timer?
     private var loadedFileDate: Date?
     private var environmentReady: Task<Void, Never>?
 
-    init(store: LibraryStore = LibraryStore(), secrets: any SecretStore = KeychainSecretStore()) {
+    init(
+        store: LibraryStore = LibraryStore(),
+        secrets: any SecretStore = KeychainSecretStore(),
+        notifications: any ReminderNotifying = ReminderNotifications()
+    ) {
         self.store = store
         self.secrets = secrets
+        self.notifications = notifications
         var fallback = ProcessInfo.processInfo.environment
         fallback["PATH"] = LoginShellEnvironment.defaultPATH
         supervisor = Supervisor(environment: fallback, secrets: secrets)
@@ -46,7 +53,21 @@ final class AppModel {
             self.environment = captured
         }
         Task { await consumeEvents() }
+
+        notifications.onAction = { [weak self] id, action in self?.handleNotification(id, action) }
+        if let real = notifications as? ReminderNotifications {
+            real.onDenied = { [weak self] in self?.onToast("Notifications are off for Cue; reminders show only here") }
+        }
+        // Anything that came due while Cue wasn't running is "Was due"; pending ones are scheduled again.
+        refreshReminders()
+        library.reminders.filter { $0.state == .pending }.forEach(notifications.schedule)
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshReminders() }
+        }
     }
+
+    /// Opens the panel when a reminder notification is clicked.
+    var onOpenPanel: () -> Void = {}
 
     // MARK: Library
 
@@ -293,6 +314,73 @@ final class AppModel {
             onToast("Couldn't make it executable: \(error.localizedDescription)")
             return false
         }
+    }
+
+    // MARK: Reminders
+
+    var reminders: [Reminder] { ReminderBook.upcoming(library.reminders) }
+
+    func reminder(_ id: UUID) -> Reminder? { library.reminders.first { $0.id == id } }
+
+    func addReminder(text: String, due: Date) {
+        let reminder = Reminder(text: text.isEmpty ? "Reminder" : text, due: due)
+        library.reminders.append(reminder)
+        save()
+        notifications.schedule(reminder)
+        refreshReminders()
+    }
+
+    func updateReminder(_ id: UUID, text: String, due: Date) {
+        guard let index = library.reminders.firstIndex(where: { $0.id == id }) else { return }
+        notifications.cancel(library.reminders[index])
+        library.reminders[index].text = text.isEmpty ? "Reminder" : text
+        library.reminders[index].due = due
+        library.reminders[index].state = .pending
+        library.reminders[index].firedAt = nil
+        save()
+        notifications.schedule(library.reminders[index])
+        refreshReminders()
+    }
+
+    /// Done in the notification, a click on a fired reminder, or Cancel Reminder.
+    func dismissReminder(_ id: UUID) {
+        guard let reminder = reminder(id) else { return }
+        notifications.cancel(reminder)
+        library.reminders.removeAll { $0.id == id }
+        save()
+        refreshReminders()
+    }
+
+    func snoozeReminder(_ id: UUID) {
+        guard let index = library.reminders.firstIndex(where: { $0.id == id }) else { return }
+        notifications.cancel(library.reminders[index])
+        library.reminders[index] = ReminderBook.snoozed(library.reminders[index], now: Date())
+        save()
+        notifications.schedule(library.reminders[index])
+        refreshReminders()
+    }
+
+    private func handleNotification(_ id: UUID, _ action: ReminderNotifications.Action) {
+        switch action {
+        case .snooze: snoozeReminder(id)
+        case .done: dismissReminder(id)
+        case .open:
+            refreshReminders()
+            onOpenPanel()
+        }
+    }
+
+    /// Marks due reminders fired, then sets a timer for the next one.
+    func refreshReminders() {
+        if !ReminderBook.markDue(&library.reminders, now: Date()).isEmpty { save() }
+        reminderTimer?.invalidate()
+        reminderTimer = nil
+        guard let next = ReminderBook.nextDue(library.reminders) else { return }
+        let timer = Timer(fire: next, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshReminders() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        reminderTimer = timer
     }
 
     // MARK: Status
