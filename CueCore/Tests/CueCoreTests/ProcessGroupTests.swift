@@ -53,7 +53,7 @@ import Testing
         // `read` fails at end-of-file instead of hanging.
         let process = try ProcessGroup.spawn(
             executable: "/bin/sh",
-            arguments: ["-c", "pwd; ps -o pgid= -p $$; if read line; then echo got; else echo eof; fi; echo oops >&2; exit 3"],
+            arguments: ["-c", "pwd; ps -o pgid= -p $$; if read line; then echo got; else echo eof; fi; sleep 0.1; echo oops >&2; exit 3"],
             environment: minimalEnvironment,
             workingDirectory: dir.path
         )
@@ -72,7 +72,7 @@ import Testing
             executable: "/bin/sh",
             arguments: ["-c", "i=0; while [ $i -lt 2000 ]; do echo line$i; i=$((i+1)); done"],
             environment: minimalEnvironment,
-            outputLimit: 100
+            output: .capture(limit: 100)
         )
         _ = await process.waitForExit(timeout: .seconds(5))
         #expect(await process.output?.waitForEnd(timeout: .seconds(2)) == true)

@@ -23,3 +23,35 @@ Choices the spec doesn't make, one per line, with the reason.
 - Panel height follows the SwiftUI content's intrinsic size, with the top edge pinned under the menu bar: `.preferredContentSize` alone left `fittingSize` at 0 (the M0 "panel doesn't open" bug), and expansions will need resizing anyway.
 - Debug aids: `-CueOpenPanelAtLaunch YES` / `-CueSnapshotPath <png>` launch arguments, and in Debug builds a `com.jmarwane.cue.debug` distributed notification (`toggle`, `snapshot:<path>`): lets the panel be exercised and inspected without Screen Recording permission.
 - Panel show/close events log at notice level under `com.jmarwane.cue`: makes focus and closing behavior checkable from `log show`.
+
+## M1 · Core
+
+- Every item stores every field; only the fields its kind uses are written: switching kind in the editor keeps what was typed, and items.json stays short enough to write by hand.
+- items.json decoding is lenient (only `kind` and `name` required; `runningWhen` accepts `"process"`, `{"port": 4000}` or `{"port": "$PORT"}`, `{"statusCommand": "…"}`; `stopBy` is `"process"` or `{"command": "…"}`; `timeLimit` is seconds or null): M2 reads hand-written files.
+- A missing `id` gets a fresh UUID on load: hand-written items work, and the first save makes the ID stable.
+- items.json that can't be read, or has a newer `schemaVersion`, is an error, never an empty library: a save must not overwrite data Cue didn't understand.
+- Save order: write a temp file in the same folder, copy the current file to `items.json.bak`, then `rename()` into place: the rename is atomic, and the .bak is always the previous good version.
+- A secret's value is never encoded, even if set in memory: the Keychain is the only place it lives (§11).
+- The tested signature includes non-secret environment values as well as keys: changing `PORT=4000` to `PORT=5000` changes behavior, so it needs a new test run. Secret values stay out.
+- Links never need testing (`isTested` is always true): there's no command to test.
+- `$NAME` in port and address fields resolves from the item's plain environment variables, then its inputs: a service with `PORT=4000` in its environment can use `$PORT` without an input.
+- Separate stdout and stderr pipes feed one bounded buffer: needed for the "else the last stderr line" rule and for a status command's "first line of stderr"; the interleaving between the two streams is approximate.
+- Lines over 16 KB are cut into pieces: output with no newlines can't grow a line buffer without bound.
+- A carriage return keeps only the text after it: progress bars show their last frame as the last line.
+- An empty `::cue result` / `::cue reason` (no text) is ordinary output: there's nothing to show.
+- Secrets shorter than 4 characters aren't redacted: masking "1" or "ab" would garble ordinary output. Longest secrets are masked first.
+- Exit 127 names the command from the shell's own "command not found: X" when it printed one, else the command's first word: the shell knows which word failed in a multi-line script.
+- A process killed by a signal reads `Stopped by signal 9 (Killed)`; durations under a minute read in whole seconds.
+- Time limits apply to tasks only: a service is meant to keep running, and status commands have their own 5 s limit.
+- The working folder is checked before spawning (`Folder not found: ~/x`), and a secret missing from the Keychain fails the run before it starts.
+- A start that doesn't come up in 30 s also stops what Cue launched: leaving it running would make a retry start a duplicate, and Failed shouldn't hide a live process.
+- An owned port/status service whose process exits gets one immediate re-check: still On (e.g. `docker compose up -d` handing off) stays On, no longer owned; otherwise Failed `Exited unexpectedly · exit N` plus one unexpected-exit event.
+- A start command exiting non-zero while Starting fails at once with its exit message, without waiting out the 30 s.
+- Failed stays Failed through Off or Unknown check results; only a passing check replaces it: a failure needs attention until it's acted on, but status mustn't claim Failed for something that is now On.
+- Checks retry once before turning On into Off or Unknown (§9 "checks are retried automatically"): a single dropped probe of a busy server isn't a stop.
+- Stop on a service Cue doesn't own, with no stop command, changes nothing and returns `notOwned(port:)`: the UI then offers `Stop process on port…` (M6). Never kills by name.
+- Stop by command: a failing stop command is `Failed · Stop command failed · Exited with code N`; stop commands get 30 s.
+- "Still answering" messages per check: `Still answering on port N`, `Status command still says it's running`, `Still running after Stop`. Force Stop is offered only while Cue owns live processes.
+- Port protection between items applies to services Cue is running: starting a second item on a port held by a running Cue service shows `Port N is already in use by <name>` instead of launching (owner lookup via lsof is M6).
+- Supervisor reports changes on one `AsyncStream<SupervisorEvent>`: the app's main-actor model is the single consumer.
+- Tests use `nc -lk` (in macOS) as a fixture server, and ports below the ephemeral range: parallel tests binding port 0 can't steal a fixture's port.

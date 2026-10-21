@@ -25,12 +25,12 @@ public final class SpawnedProcess: Sendable {
     public let pid: pid_t
     public var processGroupID: pid_t { pid }
 
-    /// Combined stdout and stderr, when the spawn asked for it.
-    public let output: OutputCollector?
+    /// What the process wrote, when the spawn captured it.
+    public let output: RunOutput?
 
     private let exit = ExitWaiter()
 
-    init(pid: pid_t, output: OutputCollector?) {
+    init(pid: pid_t, output: RunOutput?) {
         self.pid = pid
         self.output = output
         let exit = self.exit
@@ -71,16 +71,23 @@ public final class SpawnedProcess: Sendable {
 }
 
 public enum ProcessGroup {
+    /// What happens to the child's stdout and stderr.
+    public enum OutputMode: Sendable {
+        /// Both streams go to a `RunOutput`, each through its own pipe.
+        case capture(limit: Int = RunOutput.defaultLimit, redactor: Redactor = Redactor())
+        /// Only stdout is captured; stderr goes to /dev/null.
+        case captureStdoutOnly(limit: Int = RunOutput.defaultLimit)
+        /// Both go to /dev/null.
+        case discard
+    }
+
     /// Spawns `executable` in a new process group, with stdin from /dev/null.
-    /// When `captureOutput` is set, stdout and stderr go to one pipe read by an `OutputCollector`;
-    /// otherwise both go to /dev/null.
     public static func spawn(
         executable: String,
         arguments: [String],
         environment: [String: String],
         workingDirectory: String? = nil,
-        captureOutput: Bool = true,
-        outputLimit: Int = 256 * 1024
+        output mode: OutputMode = .capture()
     ) throws(SpawnError) -> SpawnedProcess {
         var attributes = posix_spawnattr_t(nil as OpaquePointer?)
         posix_spawnattr_init(&attributes)
@@ -105,16 +112,36 @@ public enum ProcessGroup {
 
         posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
 
-        var pipeFDs: [Int32] = [-1, -1]
-        if captureOutput {
-            guard pipe(&pipeFDs) == 0 else { throw SpawnError(operation: "pipe", code: errno) }
+        var pipes: [(read: Int32, write: Int32, stream: RunOutput.Stream)] = []
+        func openPipe(for stream: RunOutput.Stream, fd: Int32) throws(SpawnError) {
+            var fds: [Int32] = [-1, -1]
+            guard pipe(&fds) == 0 else { throw SpawnError(operation: "pipe", code: errno) }
             // Keep both ends out of anything else this app spawns; dup2 clears the flag for the child.
-            pipeFDs.forEach { _ = fcntl($0, F_SETFD, FD_CLOEXEC) }
-            posix_spawn_file_actions_adddup2(&actions, pipeFDs[1], STDOUT_FILENO)
-            posix_spawn_file_actions_adddup2(&actions, pipeFDs[1], STDERR_FILENO)
-        } else {
-            posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0)
-            posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
+            fds.forEach { _ = fcntl($0, F_SETFD, FD_CLOEXEC) }
+            posix_spawn_file_actions_adddup2(&actions, fds[1], fd)
+            pipes.append((fds[0], fds[1], stream))
+        }
+        func closeAll() { pipes.forEach { close($0.read); close($0.write) } }
+
+        let output: RunOutput?
+        do {
+            switch mode {
+            case .capture(let limit, let redactor):
+                output = RunOutput(limit: limit, redactor: redactor)
+                try openPipe(for: .stdout, fd: STDOUT_FILENO)
+                try openPipe(for: .stderr, fd: STDERR_FILENO)
+            case .captureStdoutOnly(let limit):
+                output = RunOutput(limit: limit)
+                try openPipe(for: .stdout, fd: STDOUT_FILENO)
+                posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
+            case .discard:
+                output = nil
+                posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0)
+                posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0)
+            }
+        } catch {
+            closeAll()
+            throw error
         }
         if let workingDirectory {
             posix_spawn_file_actions_addchdir(&actions, workingDirectory)
@@ -129,14 +156,16 @@ public enum ProcessGroup {
 
         var pid: pid_t = 0
         let result = posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
-        if captureOutput { close(pipeFDs[1]) }
+        pipes.forEach { close($0.write) }
         guard result == 0 else {
-            if captureOutput { close(pipeFDs[0]) }
+            pipes.forEach { close($0.read) }
             throw SpawnError(operation: "posix_spawn \(executable)", code: result)
         }
 
-        let collector = captureOutput ? OutputCollector(readingFrom: pipeFDs[0], limit: outputLimit) : nil
-        return SpawnedProcess(pid: pid, output: collector)
+        if let output {
+            pipes.forEach { output.startReading(from: $0.read, stream: $0.stream) }
+        }
+        return SpawnedProcess(pid: pid, output: output)
     }
 
     /// True while any process in group `pgid` exists.

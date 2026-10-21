@@ -72,7 +72,7 @@ public enum LoginShellEnvironment {
                 executable: shell,
                 arguments: [flags, command],
                 environment: environment,
-                outputLimit: 4 * 1024 * 1024
+                output: .captureStdoutOnly(limit: 4 * 1024 * 1024)
             )
         } catch {
             return nil
