@@ -94,3 +94,21 @@ Choices the spec doesn't make, one per line, with the reason.
 - Test Run is ⌘R and Save is ⌘S; opening the editor "at Test Run" tints the Test Run button and says "Test it before using it from the menu".
 - Closing the editor hides Cue so focus returns to the previous app (Cue has no Dock icon).
 - Debug builds with `-CueLibraryDirectory` keep secrets in memory, never in the login Keychain.
+
+## M4 · Quick add
+
+- The add row sits after the matching rows (before Recent), so showing it never moves a row.
+- The time-phrase parser is written here (rule 3 needs it); M5 adds its remaining tests and the reminder plumbing. Until M5, ↵ on a reminder add row says so in a toast.
+- Times with minutes and no am/pm are 24-hour (`at 9:30` at 15:00 → tomorrow 09:30); a bare hour from 1–11 that has passed this morning but not this evening means the evening (`at 7` at 15:00 → 19:00). Also accepted: `16h30`, `6:45 pm`, `tomorrow 16:15`, `in 30s`, `in 2 days`.
+- `tomorrow` with no time means 9:00, matching the `Tomorrow 9:00` chip.
+- Links also include `127.0.0.1:port/path`; a bare domain needs a dot and a 2+ letter TLD, and no spaces.
+- Rule 4 follows the spec literally: `write the report` is a Command because `/usr/bin/write` exists. Tab fixes a wrong guess.
+- A link's name: the last path component, humanized (`/admin` → `Admin`), else the host without `www.`.
+- ↵ on a command add row saves it (kind, name, icon guessed; "Ask before running" on for risky commands) and opens the editor at Test Run.
+- ⌘↵ run once: a task kept in memory only (the Recent group), counted as tested, with ⌘K Save… (opens the editor on a new draft), Dismiss (when not running), Run in Terminal and Copy Command. A `sudo` run-once goes to Terminal instead.
+- Typing in the search field clears a drop's or Tab's decision; the + button with an empty field asks for text instead of showing an empty add row.
+- Drops: an executable file becomes its quoted absolute path; a non-executable script with a shebang offers Make executable on ↵ (`chmod +x`, adding execute only where read is allowed) and stays a command; without a shebang, `.sh/.bash/.zsh/.py/.rb/.js/.pl` run through their interpreter, with a note saying so. Anything else, folders and apps become links.
+- The menu-bar icon accepts drops through its window's delegate, highlights while hovered, and opens the panel on the add row.
+- Needs Terminal: an idle item whose command contains the word `sudo` shows `Needs Terminal`, and its click runs it in Terminal. Failures and running states still show first.
+- Run in Terminal: `cd '<folder>' && export K=v; … <command>` via AppleScript `do script`; plain environment variables and inputs are exported (shell-quoted); secrets never are, since they'd land in the terminal history. Every task/service also gets Run in Terminal in ⌘K.
+- `NSAppleEventsUsageDescription` added for the Automation permission.

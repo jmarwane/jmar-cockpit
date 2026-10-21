@@ -36,6 +36,7 @@ targets:
         LSUIElement: true
         LSMinimumSystemVersion: "26.0"
         NSHumanReadableCopyright: ""
+        NSAppleEventsUsageDescription: Cue opens Terminal to run commands that need it, such as ones using sudo, when you choose Run in Terminal.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jmarwane.cue

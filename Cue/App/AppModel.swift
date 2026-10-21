@@ -18,6 +18,8 @@ final class AppModel {
     private(set) var environment: CapturedEnvironment?
     /// Live runs, for run details (elapsed time, last output line).
     private(set) var activeRuns: [UUID: RunHandle] = [:]
+    /// Commands run once without saving. Kept in memory only; gone when dismissed or when Cue quits.
+    private(set) var recent: [Item] = []
 
     /// Called with each toast-worthy message; the panel shows it.
     var onToast: (String) -> Void = { _ in }
@@ -50,7 +52,12 @@ final class AppModel {
 
     var items: [Item] { library.orderedItems }
 
-    func item(_ id: UUID) -> Item? { library.items.first { $0.id == id } }
+    func item(_ id: UUID) -> Item? { library.items.first { $0.id == id } ?? recent.first { $0.id == id } }
+
+    func isRecent(_ id: UUID) -> Bool { recent.contains { $0.id == id } }
+
+    /// The PATH commands run with, for classifying quick-add text.
+    var commandPath: String { environment?.path ?? LoginShellEnvironment.defaultPATH }
 
     /// Reads items.json again if it changed on disk since the last load.
     func reloadIfChanged() {
@@ -133,6 +140,7 @@ final class AppModel {
             }
         }
 
+        recent.removeAll { $0.id == item.id }
         if let index = library.items.firstIndex(where: { $0.id == item.id }) {
             library.items[index] = item
         } else {
@@ -199,9 +207,92 @@ final class AppModel {
         }
         services = services.filter { ids.contains($0.key) }
         tasks = tasks.filter { ids.contains($0.key) }
-        let items = library.items
+        let items = library.items + recent
         Task { await supervisor.setItems(items) }
         updateIcon()
+    }
+
+    // MARK: Quick add
+
+    /// Saves a link at the end of the list.
+    @discardableResult
+    func addLink(_ target: String) -> Item? {
+        let item = Item(kind: .link, name: Classifier.linkName(target), tint: ItemSuggestions.tint(for: target), target: target)
+        do {
+            try saveItem(item, secretValues: [:])
+            return item
+        } catch {
+            onToast(error.description)
+            return nil
+        }
+    }
+
+    /// Saves a command with its guessed kind, name and icon. It's Not yet tested until a Test Run passes.
+    func addCommand(_ command: String) -> Item? {
+        let kind = ItemSuggestions.kind(for: command)
+        let name = ItemSuggestions.name(for: command)
+        let item = Item(
+            kind: kind, name: name, icon: ItemSuggestions.icon(for: command, kind: kind), tint: ItemSuggestions.tint(for: name),
+            command: command, confirmBeforeRunning: CommandTraits.isRisky(command)
+        )
+        do {
+            try saveItem(item, secretValues: [:])
+            return item
+        } catch {
+            onToast(error.description)
+            return nil
+        }
+    }
+
+    /// Runs a command once without saving it; it shows in the Recent group.
+    func runOnce(_ command: String) {
+        if CommandTraits.needsTerminal(command) {
+            runInTerminal(Item(kind: .task, name: "", command: command), inputs: [:])
+            return
+        }
+        var item = Item(kind: .task, name: ItemSuggestions.name(for: command), icon: "clock.arrow.circlepath", tint: .sand, command: command)
+        item.testedSignature = item.signature
+        recent.append(item)
+        tasks[item.id] = .ready
+        let items = library.items + recent
+        Task {
+            await supervisor.setItems(items)
+            await whenReady()
+            await supervisor.run(item.id, inputs: [:])
+        }
+    }
+
+    func dismissRecent(_ id: UUID) {
+        guard isRecent(id), tasks[id]?.isRunning != true else { return }
+        recent.removeAll { $0.id == id }
+        reconcileStatuses()
+    }
+
+    /// Opens Terminal with `cd <folder> && <command>`. A new run, not a hand-off of one already going.
+    func runInTerminal(_ item: Item, inputs: [String: String]) {
+        let script = TerminalCommand.appleScript(for: TerminalCommand.line(for: item, inputs: inputs))
+        var error: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&error)
+        if let error {
+            let message = error[NSAppleScript.errorMessage] as? String ?? "Terminal didn't respond"
+            onToast("Run in Terminal: \(message)")
+        }
+    }
+
+    /// `chmod +x`: execute for the owner, and for group and others where they can read.
+    func makeExecutable(_ path: String) -> Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              let permissions = (attributes[.posixPermissions] as? NSNumber)?.uint16Value else { return false }
+        var updated = permissions | 0o100
+        if permissions & 0o040 != 0 { updated |= 0o010 }
+        if permissions & 0o004 != 0 { updated |= 0o001 }
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: updated)], ofItemAtPath: path)
+            return true
+        } catch {
+            onToast("Couldn't make it executable: \(error.localizedDescription)")
+            return false
+        }
     }
 
     // MARK: Status

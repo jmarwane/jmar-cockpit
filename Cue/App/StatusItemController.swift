@@ -2,14 +2,19 @@ import AppKit
 
 /// The menu-bar item. Clicking it toggles the panel.
 @MainActor
-final class StatusItemController: NSObject {
+final class StatusItemController: NSObject, NSWindowDelegate {
     private let item: NSStatusItem
     private let onClick: () -> Void
+    /// Something dropped on the icon: file URLs or text.
+    var onDrop: ([URL], String?) -> Void = { _, _ in }
 
     init(onClick: @escaping () -> Void) {
         self.onClick = onClick
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
+        // The icon accepts drops; its window forwards dragging messages to its delegate.
+        item.button?.window?.registerForDraggedTypes([.fileURL, .URL, .string])
+        item.button?.window?.delegate = self
         if let button = item.button {
             button.image = MenuBarIcon.image(for: .idle)
             button.setAccessibilityLabel("Cue")
@@ -39,6 +44,25 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func clicked() { onClick() }
+
+    // MARK: Drops
+
+    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        item.button?.highlight(true)
+        return .copy
+    }
+
+    func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        item.button?.highlight(false)
+    }
+
+    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        item.button?.highlight(false)
+        let (urls, text) = DropReader.read(sender.draggingPasteboard)
+        guard !urls.isEmpty || text != nil else { return false }
+        onDrop(urls, text)
+        return true
+    }
 }
 
 /// The monochrome template icon: two dots beside two lines.

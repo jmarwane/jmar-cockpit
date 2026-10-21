@@ -34,8 +34,31 @@ final class PanelModel {
     let app: AppModel
 
     var query = "" {
-        didSet { if query != oldValue { keepSelectionVisible() } }
+        didSet {
+            guard query != oldValue else { return }
+            if !isSettingQuery {
+                // Typing replaces whatever a drop or Tab decided.
+                addKindOverride = nil
+                pendingExecutable = nil
+                dropNote = nil
+            }
+            if query.isEmpty { forceAddRow = false }
+            keepSelectionVisible()
+        }
     }
+
+    /// The add row's selection ID; it isn't an item.
+    static let addRowID = UUID()
+    /// Set by the + button and by drops: show the add row even when something matches.
+    var forceAddRow = false
+    /// Set by Tab: the type the user chose instead of the guess.
+    var addKindOverride: Classifier.Kind?
+    /// A dropped script with a shebang that isn't executable yet.
+    private(set) var pendingExecutable: String?
+    /// What a drop changed, shown in the add row's subtitle.
+    private(set) var dropNote: String?
+    var isDropTargeted = false
+    private var isSettingQuery = false
     var selection: UUID?
     var expansion: Expansion?
     /// Values typed into the inputs form, by input name.
@@ -52,6 +75,8 @@ final class PanelModel {
     /// Opens the editor on an item; `atTestRun` for untested items.
     var openEditor: (UUID?, _ atTestRun: Bool) -> Void = { _, _ in }
     var showActionsMenu: ([MenuAction]) -> Void = { _ in }
+    /// Opens the editor on a new, unsaved item made from a command (Save… on a Recent row).
+    var openEditorNew: (String) -> Void = { _ in }
 
     private var toastTask: Task<Void, Never>?
     /// Where the pointer was at the last selection change; hover only counts once it moves.
@@ -97,13 +122,127 @@ final class PanelModel {
         }
     }
 
+    /// Commands run once, matching the search too.
+    var visibleRecent: [Item] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty, !addRowVisible else { return app.recent }
+        return app.recent.filter { $0.command.localizedCaseInsensitiveContains(needle) }
+    }
+
     var selectedItem: Item? { selection.flatMap(app.item) }
 
+    /// Everything ↑ and ↓ move through, top to bottom.
+    var selectableIDs: [UUID] {
+        visibleRows.map(\.id) + (addRowVisible ? [Self.addRowID] : []) + visibleRecent.map(\.id)
+    }
+
     private func keepSelectionVisible() {
-        let visible = visibleRows
-        if let selection, visible.contains(where: { $0.id == selection }) { return }
-        selection = visible.first?.id
-        if let expansion, !visible.contains(where: { $0.id == expansion.itemID }) { self.expansion = nil }
+        let ids = selectableIDs
+        if let expansion, !ids.contains(expansion.itemID) { self.expansion = nil }
+        if let selection, ids.contains(selection) {
+            // Typing that leaves no matches moves to the add row.
+            if addRowVisible, visibleRows.isEmpty, selection != Self.addRowID { self.selection = Self.addRowID }
+            return
+        }
+        selection = addRowVisible && visibleRows.isEmpty ? Self.addRowID : ids.first
+    }
+
+    // MARK: Quick add
+
+    /// Shown when typed text matches nothing, or after + or a drop.
+    var addRowVisible: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (forceAddRow || visibleRows.isEmpty)
+    }
+
+    var addGuess: Classifier.Guess { Classifier.classify(query, path: app.commandPath) }
+
+    var addKind: Classifier.Kind { addKindOverride ?? addGuess.kind }
+
+    /// The + button: shows the add row even when something matches.
+    func showAddRow() {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showToast("Type or paste something to add")
+            return
+        }
+        forceAddRow = true
+        selection = Self.addRowID
+        expansion = nil
+    }
+
+    func cycleAddKind() {
+        addKindOverride = addKind.next
+    }
+
+    /// ↵ on the add row; ⌘↵ runs a command once without saving. The guess never acts on its own.
+    func activateAddRow(runOnce: Bool = false) {
+        let text = addGuess.text
+        if let path = pendingExecutable {
+            if app.makeExecutable(path) {
+                pendingExecutable = nil
+                dropNote = nil
+                showToast("Made executable")
+            }
+            return
+        }
+        switch addKind {
+        case .link:
+            guard let item = app.addLink(text) else { return }
+            clearQuery()
+            selection = item.id
+            showToast("Link added")
+        case .command:
+            if runOnce {
+                app.runOnce(text)
+                clearQuery()
+                selection = app.recent.last?.id
+            } else if let item = app.addCommand(text) {
+                clearQuery()
+                closePanel()
+                openEditor(item.id, true)
+            }
+        case .reminder:
+            showToast("Reminders arrive in the next milestone")
+        }
+    }
+
+    private func clearQuery() {
+        query = ""
+        forceAddRow = false
+    }
+
+    /// Sets the search text without resetting a drop's or Tab's decisions.
+    private func setQuery(_ text: String, kind: Classifier.Kind? = nil, note: String? = nil, executable: String? = nil) {
+        isSettingQuery = true
+        query = text
+        isSettingQuery = false
+        addKindOverride = kind
+        dropNote = note
+        pendingExecutable = executable
+        forceAddRow = true
+        expansion = nil
+        selection = Self.addRowID
+    }
+
+    /// Something dropped on the panel or the icon becomes the add row.
+    func receiveDrop(fileURLs: [URL], text: String?) {
+        if let url = fileURLs.first {
+            if url.isFileURL {
+                switch DropAction.forFile(at: url.path) {
+                case .command(let command):
+                    setQuery(command, kind: .command)
+                case .needsExecutable(let path, let command):
+                    setQuery(command, kind: .command, note: "Not executable yet · ↵ makes it executable", executable: path)
+                case .viaInterpreter(let command, let interpreter):
+                    setQuery(command, kind: .command, note: "Runs with \(interpreter), since the file isn't executable")
+                case .link(let path):
+                    setQuery(path, kind: .link)
+                }
+            } else {
+                setQuery(url.absoluteString)
+            }
+        } else if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            setQuery(text)
+        }
     }
 
     // MARK: Toasts
@@ -134,9 +273,17 @@ final class PanelModel {
         case 126:  // ↑
             moveSelection(by: -1)
             return true
-        case 36, 76:  // ↵
-            if modifiers.contains(.command) { return false }
+        case 36, 76:  // ↵, ⌘↵
+            if modifiers.contains(.command) {
+                guard selection == Self.addRowID, addKind == .command else { return false }
+                activateAddRow(runOnce: true)
+                return true
+            }
             returnKey()
+            return true
+        case 48:  // Tab switches the add row's type
+            guard addRowVisible, selection == Self.addRowID, modifiers.isEmpty else { return false }
+            cycleAddKind()
             return true
         default:
             break
@@ -181,19 +328,21 @@ final class PanelModel {
 
     func moveSelection(by offset: Int) {
         pointerAtLastSelection = NSEvent.mouseLocation
-        let visible = visibleRows
-        guard !visible.isEmpty else { return }
-        let current = visible.firstIndex { $0.id == selection } ?? (offset > 0 ? -1 : visible.count)
-        let next = min(max(current + offset, 0), visible.count - 1)
-        if visible[next].id != selection {
-            selection = visible[next].id
+        let ids = selectableIDs
+        guard !ids.isEmpty else { return }
+        let current = ids.firstIndex { $0 == selection } ?? (offset > 0 ? -1 : ids.count)
+        let next = min(max(current + offset, 0), ids.count - 1)
+        if ids[next] != selection {
+            selection = ids[next]
             expansion = nil
         }
     }
 
-    private func returnKey() {
+    func returnKey() {
         if let expansion, expansion.itemID == selection {
             submit(expansion)
+        } else if selection == Self.addRowID {
+            activateAddRow()
         } else if let item = selectedItem {
             activate(item)
         }
@@ -224,6 +373,9 @@ final class PanelModel {
         case .openEditorAtTestRun:
             closePanel()
             openEditor(item.id, true)
+        case .runInTerminal:
+            expansion = nil
+            app.runInTerminal(item, inputs: item.currentInputValues)
         case .open:
             if app.open(item.target) {
                 closePanel()
@@ -287,6 +439,7 @@ final class PanelModel {
 
     /// ⌘E: the editor on the selected item, or on the first one when nothing is selected.
     func edit(_ item: Item?) {
+        if let item, app.isRecent(item.id) { return }
         closePanel()
         openEditor(item?.id, item.map { !$0.isTested } ?? false)
     }
@@ -294,8 +447,35 @@ final class PanelModel {
     // MARK: ⌘K
 
     func presentActions() {
+        if selection == Self.addRowID, addRowVisible {
+            showActionsMenu(addRowActions())
+            return
+        }
         guard let item = selectedItem else { return }
         showActionsMenu(actions(for: item))
+    }
+
+    private func addRowActions() -> [MenuAction] {
+        var actions = [MenuAction(title: addRowFooterLabel, keyEquivalent: "\r") { [weak self] in self?.activateAddRow() }]
+        if addKind == .command, pendingExecutable == nil {
+            actions.append(MenuAction(title: "Run Once", keyEquivalent: "\r", modifiers: .command) { [weak self] in
+                self?.activateAddRow(runOnce: true)
+            })
+        }
+        for kind in Classifier.Kind.allCases where kind != addKind {
+            actions.append(MenuAction(title: "Treat as \(kind.rawValue)") { [weak self] in self?.addKindOverride = kind })
+        }
+        return actions
+    }
+
+    /// The footer's label for the add row.
+    var addRowFooterLabel: String {
+        if pendingExecutable != nil { return "Make Executable" }
+        switch addKind {
+        case .link: return "Add Link"
+        case .command: return "Save & Edit"
+        case .reminder: return addGuess.reminder.due == nil ? "Pick a Time" : "Set Reminder"
+        }
     }
 
     func actions(for item: Item) -> [MenuAction] {
@@ -320,6 +500,21 @@ final class PanelModel {
                 self?.showToast("Copied")
             })
         }
+        if app.isRecent(item.id) {
+            actions.append(MenuAction(title: "Save…") { [weak self] in
+                guard let self else { return }
+                closePanel()
+                openEditorNew(item.command)
+            })
+            if app.tasks[item.id]?.isRunning != true {
+                actions.append(MenuAction(title: "Dismiss") { [weak self] in self?.app.dismissRecent(item.id) })
+            }
+        }
+        if item.runsCommands, presentation.primary != .runInTerminal {
+            actions.append(MenuAction(title: "Run in Terminal") { [weak self] in
+                self?.app.runInTerminal(item, inputs: item.currentInputValues)
+            })
+        }
         if item.runsCommands {
             actions.append(MenuAction(title: "Copy Command") { [weak self] in
                 self?.app.copy(item.command)
@@ -336,8 +531,10 @@ final class PanelModel {
         } else if case .stopping? = service?.state, service?.ownsProcess == true {
             actions.append(MenuAction(title: "Force Stop") { [weak self] in self?.app.forceStop(item.id) })
         }
-        actions.append(.separator)
-        actions.append(MenuAction(title: "Edit…", keyEquivalent: "e", modifiers: .command) { [weak self] in self?.edit(item) })
+        if !app.isRecent(item.id) {
+            actions.append(.separator)
+            actions.append(MenuAction(title: "Edit…", keyEquivalent: "e", modifiers: .command) { [weak self] in self?.edit(item) })
+        }
         return actions
     }
 }
@@ -355,15 +552,22 @@ extension PanelModel {
             switch argument {
             case "down": moveSelection(by: 1)
             case "up": moveSelection(by: -1)
-            case "return":
-                if let expansion { submit(expansion) } else if let item = selectedItem { activate(item) }
+            case "return": returnKey()
             case "esc": escape()
             default: break
             }
         case "type":
             query = argument
         case "click":
-            if let item = rows.first(where: { $0.name == argument }) { activate(item) }
+            if let item = (rows + app.recent).first(where: { $0.name == argument }) { activate(item) }
+        case "tab":
+            if addRowVisible { cycleAddKind() }
+        case "plus":
+            showAddRow()
+        case "runonce":
+            if selection == Self.addRowID { activateAddRow(runOnce: true) }
+        case "drop":
+            receiveDrop(fileURLs: [URL(fileURLWithPath: argument)], text: nil)
         case "select":
             if let item = rows.first(where: { $0.name == argument }) { selection = item.id }
         case "actions":
@@ -374,7 +578,8 @@ extension PanelModel {
         default:
             break
         }
-        appLog.notice("debug \(command, privacy: .public) → selection=\(self.selectedItem?.name ?? "-", privacy: .public) expansion=\(String(describing: self.expansion), privacy: .public)")
+        let selected = selection == Self.addRowID ? "add row (\(addKind.rawValue))" : (selectedItem?.name ?? "-")
+        appLog.notice("debug \(command, privacy: .public) → selection=\(selected, privacy: .public) expansion=\(String(describing: self.expansion), privacy: .public)")
     }
 }
 #endif

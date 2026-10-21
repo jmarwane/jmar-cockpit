@@ -75,7 +75,7 @@ public enum ItemSuggestions {
             .map(String.init)
     }
 
-    static func humanize(_ text: String) -> String {
+    public static func humanize(_ text: String) -> String {
         let spaced = text.replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
         guard let first = spaced.first else { return text }
         return first.uppercased() + spaced.dropFirst()

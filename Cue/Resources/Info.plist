@@ -24,6 +24,8 @@
 	<string>26.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Cue opens Terminal to run commands that need it, such as ones using sudo, when you choose Run in Terminal.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string></string>
 </dict>

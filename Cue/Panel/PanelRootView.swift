@@ -15,6 +15,17 @@ struct PanelRootView: View {
             footer
         }
         .frame(width: PanelMetrics.width)
+        .overlay {
+            if model.isDropTargeted {
+                RoundedRectangle(cornerRadius: PanelMetrics.cornerRadius, style: .continuous)
+                    .strokeBorder(Palette.accent, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [.fileURL, .url, .utf8PlainText], isTargeted: $model.isDropTargeted) { providers in
+            DropReader.read(providers) { urls, text in model.receiveDrop(fileURLs: urls, text: text) }
+            return true
+        }
         .onChange(of: model.openCount, initial: true) {
             searchFocused = true
         }
@@ -36,7 +47,7 @@ struct PanelRootView: View {
                 .foregroundStyle(Palette.ink)
                 .focused($searchFocused)
             Button {
-                model.showToast("Quick add isn't built yet")
+                model.showAddRow()
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
@@ -55,13 +66,15 @@ struct PanelRootView: View {
 
     @ViewBuilder private var content: some View {
         let rows = model.visibleRows
-        if model.app.loadError != nil && model.rows.isEmpty {
-            message(model.app.loadError ?? "")
-        } else if model.rows.isEmpty {
-            message("Paste a command, drop a script, add a link, or type \u{201C}stretch in 20m\u{201D}.")
-        } else if rows.isEmpty {
-            message("No matches")
-        } else if rows.count > Metrics.maxVisibleRows {
+        let recent = model.visibleRecent
+        let count = rows.count + recent.count + (model.addRowVisible ? 1 : 0)
+        if count == 0 {
+            if let error = model.app.loadError {
+                message(error)
+            } else {
+                message("Paste a command, drop a script, add a link, or type \u{201C}stretch in 20m\u{201D}.")
+            }
+        } else if count > Metrics.maxVisibleRows {
             ScrollViewReader { proxy in
                 ScrollView(.vertical) { list(rows) }
                     .frame(height: CGFloat(Metrics.maxVisibleRows) * Metrics.rowHeight + Metrics.listInset * 2)
@@ -81,9 +94,48 @@ struct PanelRootView: View {
                 ForEach(rows) { item in
                     row(item, now: context.date)
                 }
+                if model.addRowVisible {
+                    addRow(now: context.date)
+                }
+                let recent = model.visibleRecent
+                if !recent.isEmpty {
+                    groupLabel("Recent")
+                    ForEach(recent) { item in
+                        row(item, now: context.date)
+                    }
+                }
             }
             .padding(Metrics.listInset)
         }
+    }
+
+    private func addRow(now: Date) -> some View {
+        let isSelected = model.selection == PanelModel.addRowID
+        return Button {
+            model.selection = PanelModel.addRowID
+            model.activateAddRow()
+        } label: {
+            AddRowView(model: model, isSelected: isSelected, now: now)
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: Metrics.selectionRadius, style: .continuous)
+                            .fill(Palette.ink.opacity(0.075))
+                            .matchedGeometryEffect(id: "selection", in: selectionSpace)
+                    }
+                }
+        }
+        .buttonStyle(RowButtonStyle())
+        .id(PanelModel.addRowID)
+    }
+
+    private func groupLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Palette.ink2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
     }
 
     @ViewBuilder private func row(_ item: Item, now: Date) -> some View {
@@ -142,7 +194,21 @@ struct PanelRootView: View {
                 .truncationMode(.tail)
                 .animation(.easeOut(duration: 0.15), value: model.toast)
             Spacer(minLength: 8)
-            if let item = model.selectedItem {
+            if model.selection == PanelModel.addRowID, model.addRowVisible {
+                HStack(spacing: 5) {
+                    Text(model.addRowFooterLabel)
+                    KeyChip("↵")
+                }
+                .lineLimit(1)
+                Rectangle().fill(Palette.ink2.opacity(0.3)).frame(width: 1, height: 14)
+                Button { model.presentActions() } label: {
+                    HStack(spacing: 5) {
+                        Text("Actions")
+                        KeyChip("⌘K")
+                    }
+                }
+                .buttonStyle(.plain)
+            } else if let item = model.selectedItem {
                 let primary = model.app.presentation(for: item).primary
                 if primary != .none {
                     HStack(spacing: 5) {

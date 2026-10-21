@@ -25,8 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let editor = EditorWindowController(model: EditorModel(app: app))
         let panel = PanelController(model: PanelModel(app: app))
         panel.model.openEditor = { [weak editor] id, atTestRun in editor?.show(itemID: id, atTestRun: atTestRun) }
+        panel.model.openEditorNew = { [weak editor] command in editor?.showNew(command: command) }
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
         app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
+        statusItem.onDrop = { [weak panel] urls, text in
+            guard let panel else { return }
+            if !panel.isVisible { panel.show() }
+            panel.model.receiveDrop(fileURLs: urls, text: text)
+        }
         statusItem.setIcon(app.iconState)
         panel.anchor = { [weak statusItem] in statusItem?.buttonFrameOnScreen }
         panel.onVisibilityChange = { [weak statusItem] visible in statusItem?.setHighlighted(visible) }

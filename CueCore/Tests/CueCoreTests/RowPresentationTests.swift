@@ -72,6 +72,16 @@ import Testing
         #expect(row(service, .on(since: nil, origin: .cue), owns: true).primary == .stop)
     }
 
+    @Test func sudoNeedsTerminal() {
+        let task = Item(kind: .task, name: "Flush DNS", command: "sudo dscacheutil -flushcache")
+        #expect(RowPresentation.make(item: task, task: .ready, now: now) == RowPresentation(glyph: .none, subtitle: "Needs Terminal", primary: .runInTerminal))
+        let failed = RowPresentation.make(item: task, task: .failed(Failure(message: "Exited with code 1")), now: now)
+        #expect(failed.primary == .showError)
+        let service = Item(kind: .service, name: "Proxy", command: "sudo proxy", runningWhen: .port("80"))
+        #expect(row(service, .off(since: nil)).primary == .runInTerminal)
+        #expect(row(service, .on(since: nil, origin: .outside)).primary == .stopProcessOnPort(80))
+    }
+
     @Test func linkRows() {
         let link = Item(kind: .link, name: "Admin", target: "http://localhost:4000/admin")
         #expect(RowPresentation.make(item: link) == RowPresentation(glyph: .link, subtitle: "localhost:4000/admin", primary: .open))
@@ -87,6 +97,11 @@ import Testing
         #expect(RelativeText.ago(now.addingTimeInterval(-30), now: now) == "just now")
         #expect(RelativeText.ago(now.addingTimeInterval(-7200), now: now) == "2h ago")
         #expect(RelativeText.elapsed(since: now.addingTimeInterval(-3900), now: now) == "1h 5m")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(1200), now: now) == "20 min")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(1199.6), now: now) == "20 min")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(1140.2), now: now) == "19 min")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(3900), now: now) == "1 h 5 min")
+        #expect(RelativeText.countdown(to: now.addingTimeInterval(86_400 * 2), now: now) == "2 days")
     }
 }
 

@@ -28,6 +28,8 @@ public enum PrimaryAction: Sendable, Equatable {
     case showRunDetails
     case check
     case openEditorAtTestRun
+    /// `sudo` needs a password prompt, so it runs in Terminal instead.
+    case runInTerminal
     case open
     /// Starting, Stopping, Checking: the click is ignored.
     case none
@@ -43,6 +45,7 @@ public enum PrimaryAction: Sendable, Equatable {
         case .showRunDetails: "Show Details"
         case .check: "Check Status"
         case .openEditorAtTestRun: "Test Run…"
+        case .runInTerminal: "Run in Terminal"
         case .open: "Open"
         case .none: ""
         }
@@ -57,6 +60,7 @@ public enum PrimaryAction: Sendable, Equatable {
         case .showRunDetails: "ellipsis"
         case .check: "arrow.clockwise"
         case .openEditorAtTestRun: "hammer"
+        case .runInTerminal: "apple.terminal"
         case .open: "arrow.up.right"
         case .none: nil
         }
@@ -96,6 +100,7 @@ public struct RowPresentation: Sendable, Equatable {
         }
         switch status.state {
         case .off(let since):
+            if CommandTraits.needsTerminal(item.command) { return needsTerminal }
             if !item.isTested { return notTested }
             let subtitle = since.map { "Not running · stopped \(RelativeText.ago($0, now: now))" } ?? "Not running"
             return RowPresentation(glyph: .off, subtitle: subtitle, primary: .start)
@@ -118,6 +123,7 @@ public struct RowPresentation: Sendable, Equatable {
         case .failed(let failure):
             return RowPresentation(glyph: .failed, subtitle: failedSubtitle(failure), primary: .showError)
         case .unknown(let reason):
+            if reason == nil, CommandTraits.needsTerminal(item.command) { return needsTerminal }
             let subtitle = reason.map { "Status unknown · \($0)" } ?? "Status unknown"
             return RowPresentation(glyph: .unknown, subtitle: subtitle, primary: .check)
         }
@@ -135,6 +141,11 @@ public struct RowPresentation: Sendable, Equatable {
     }
 
     private static func taskRow(_ item: Item, _ state: TaskState, now: Date) -> RowPresentation {
+        let idle: Bool = switch state {
+        case .ready, .done, .cancelled: true
+        default: false
+        }
+        if idle, CommandTraits.needsTerminal(item.command) { return needsTerminal }
         switch state {
         case .ready:
             return item.isTested ? RowPresentation(glyph: .none, subtitle: "Ready", primary: .run) : notTested
@@ -157,6 +168,7 @@ public struct RowPresentation: Sendable, Equatable {
     }
 
     private static let notTested = RowPresentation(glyph: .none, subtitle: "Not yet tested", primary: .openEditorAtTestRun)
+    private static let needsTerminal = RowPresentation(glyph: .none, subtitle: "Needs Terminal", primary: .runInTerminal)
 
     /// `Failed · <script's reason>`, `Failed · exit 1 · <first error line>`, or `Failed · <message>`.
     public static func failedSubtitle(_ failure: Failure) -> String {
@@ -177,6 +189,21 @@ public enum RelativeText {
         case ..<3600: return "\(seconds / 60)m ago"
         case ..<86_400: return "\(seconds / 3600)h ago"
         default: return "\(seconds / 86_400)d ago"
+        }
+    }
+
+    /// `12 min`, `1 h 5 min`, `2 days`, for reminders.
+    public static func countdown(to date: Date, now: Date = Date()) -> String {
+        let seconds = max(0, Int(date.timeIntervalSince(now).rounded()))
+        switch seconds {
+        case ..<60: return "\(seconds) s"
+        case ..<3600: return "\((seconds + 59) / 60) min"
+        case ..<86_400:
+            let minutes = (seconds % 3600) / 60
+            return minutes == 0 ? "\(seconds / 3600) h" : "\(seconds / 3600) h \(minutes) min"
+        default:
+            let days = seconds / 86_400
+            return days == 1 ? "1 day" : "\(days) days"
         }
     }
 
