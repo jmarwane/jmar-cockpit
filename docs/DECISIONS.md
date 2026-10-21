@@ -20,3 +20,6 @@ Choices the spec doesn't make, one per line, with the reason.
 - Esc in M0 clears the search, then closes the panel: §5's order minus expansions, which arrive in M2.
 - The panel also closes when it stops being key (e.g. ⌘Tab): same intent as "a click outside", and avoids a key panel lingering over another active app.
 - Panel background is `NSVisualEffectView` (`.popover` material) with a 14 pt continuous corner: "the system material" (§14); it switches to solid with Reduce Transparency on its own.
+- Panel height follows the SwiftUI content's intrinsic size, with the top edge pinned under the menu bar: `.preferredContentSize` alone left `fittingSize` at 0 (the M0 "panel doesn't open" bug), and expansions will need resizing anyway.
+- Debug aids: `-CueOpenPanelAtLaunch YES` / `-CueSnapshotPath <png>` launch arguments, and in Debug builds a `com.jmarwane.cue.debug` distributed notification (`toggle`, `snapshot:<path>`): lets the panel be exercised and inspected without Screen Recording permission.
+- Panel show/close events log at notice level under `com.jmarwane.cue`: makes focus and closing behavior checkable from `log show`.

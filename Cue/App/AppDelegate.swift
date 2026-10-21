@@ -16,5 +16,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.panel = panel
         self.statusItem = statusItem
+
+        #if DEBUG
+        // Debug aid: `Cue.debug` distributed notifications toggle or snapshot the panel from a shell.
+        DistributedNotificationCenter.default().addObserver(forName: .init("com.jmarwane.cue.debug"), object: nil, queue: .main) { note in
+            let command = note.object as? String ?? ""
+            MainActor.assumeIsolated {
+                if command == "toggle" { panel.toggle() }
+                if command.hasPrefix("snapshot:") { panel.writeSnapshot(to: String(command.dropFirst("snapshot:".count))) }
+            }
+        }
+        #endif
+
+        // Debug aids, read from launch arguments only (never persisted):
+        // `open Cue.app --args -CueOpenPanelAtLaunch YES -CueSnapshotPath /tmp/panel.png`
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "CueOpenPanelAtLaunch") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                panel.show()
+                if let path = defaults.string(forKey: "CueSnapshotPath") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { panel.writeSnapshot(to: path) }
+                }
+            }
+        }
     }
 }
