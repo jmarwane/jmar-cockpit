@@ -93,6 +93,7 @@ final class PanelModel {
     var openEditorNew: (String) -> Void = { _ in }
     /// Opens the View Log window for an item.
     var openLog: (UUID) -> Void = { _ in }
+    var openSettings: () -> Void = {}
 
     private var toastTask: Task<Void, Never>?
     /// Where the pointer was at the last selection change; hover only counts once it moves.
@@ -395,7 +396,8 @@ final class PanelModel {
                 edit(selectedItem)
                 return true
             case ",":
-                showToast("Settings aren't built yet")
+                closePanel()
+                openSettings()
                 return true
             default:
                 return false

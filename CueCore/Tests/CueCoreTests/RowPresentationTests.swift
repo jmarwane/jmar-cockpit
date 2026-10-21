@@ -90,6 +90,23 @@ import Testing
         #expect(RowPresentation.make(item: web, service: ServiceStatus(state: .on(since: nil, origin: .outside)), problem: "x", now: now).glyph == .on)
     }
 
+    @Test func voiceOverLabels() {
+        let running = ServiceStatus(state: .on(since: now.addingTimeInterval(-240), origin: .cue), ownsProcess: true)
+        #expect(RowPresentation.accessibilityLabel(item: web, service: running, now: now) == "Splash Server, running for 4 minutes, localhost:4000. Stop.")
+        let off = ServiceStatus(state: .off(since: now.addingTimeInterval(-60)))
+        #expect(RowPresentation.accessibilityLabel(item: web, service: off, now: now) == "Splash Server, not running, stopped 1 minute ago. Start.")
+        let failed = ServiceStatus(state: .failed(Failure(message: "Exited with code 1", exitCode: 1, errorLine: "Error: EADDRINUSE")))
+        #expect(RowPresentation.accessibilityLabel(item: web, service: failed, now: now) == "Splash Server, failed, exit 1, Error: EADDRINUSE. Show Error.")
+        let task = tested(Item(kind: .task, name: "Report", command: "x"))
+        #expect(RowPresentation.accessibilityLabel(item: task, task: .running(since: now.addingTimeInterval(-42)), now: now) == "Report, running for 42 seconds. Show Details.")
+        let done = RunResult(ending: .exited(0), command: "x", startedAt: now, endedAt: now.addingTimeInterval(-180), result: "saved a.csv")
+        #expect(RowPresentation.accessibilityLabel(item: task, task: .done(done), now: now) == "Report, done, saved a.csv, 3 minutes ago. Run.")
+        #expect(RowPresentation.accessibilityLabel(item: web, service: ServiceStatus(state: .starting(since: now)), now: now) == "Splash Server, starting.")
+        let link = Item(kind: .link, name: "Admin", target: "http://localhost:4000/admin")
+        #expect(RowPresentation.accessibilityLabel(item: link) == "Admin, link to localhost:4000/admin. Open.")
+        #expect(RelativeText.spoken(3900) == "1 hour 5 minutes")
+    }
+
     @Test func linkRows() {
         let link = Item(kind: .link, name: "Admin", target: "http://localhost:4000/admin")
         #expect(RowPresentation.make(item: link) == RowPresentation(glyph: .link, subtitle: "localhost:4000/admin", primary: .open))

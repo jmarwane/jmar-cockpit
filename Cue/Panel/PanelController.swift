@@ -37,8 +37,13 @@ final class PanelController: NSObject, NSWindowDelegate {
         background.layer?.cornerRadius = PanelMetrics.cornerRadius
         background.layer?.cornerCurve = .continuous
         background.layer?.masksToBounds = true
-        background.layer?.borderWidth = 0.5
-        background.layer?.borderColor = NSColor.separatorColor.cgColor
+        applyEdge(to: background)
+        // Increase Contrast can change while Cue runs.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak background] _ in
+            MainActor.assumeIsolated { if let background { PanelController.applyEdge(to: background) } }
+        }
 
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         background.addSubview(hostingView)
@@ -54,6 +59,15 @@ final class PanelController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { panel.isVisible }
 
+    /// A 0.5 pt edge; 1 pt and stronger with Increase Contrast.
+    static func applyEdge(to view: NSView) {
+        let increased = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        view.layer?.borderWidth = increased ? 1 : 0.5
+        view.layer?.borderColor = (increased ? NSColor.labelColor.withAlphaComponent(0.6) : NSColor.separatorColor).cgColor
+    }
+
+    private func applyEdge(to view: NSView) { Self.applyEdge(to: view) }
+
     func toggle() {
         panelLog.notice("toggle visible=\(self.isVisible)")
         isVisible ? close(reason: "toggle") : show()
@@ -63,12 +77,32 @@ final class PanelController: NSObject, NSWindowDelegate {
         let size = contentSize
         panel.setFrame(NSRect(origin: origin(for: size), size: size), display: false)
         // makeKey without NSApp.activate: the frontmost app keeps its active state.
+        panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
         panel.invalidateShadow()
+        animateOpening()
         panelLog.notice("show frame=\(NSStringFromRect(self.panel.frame), privacy: .public) visible=\(self.panel.isVisible) key=\(self.panel.isKeyWindow) anchor=\(String(describing: self.anchor()), privacy: .public) appActive=\(NSApp.isActive) frontmost=\(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "-", privacy: .public)")
         model.didOpen()
         startMonitoring()
         onVisibilityChange(true)
+    }
+
+    /// Opens in 0.24 s with a slight scale; with Reduce Motion, a fade only.
+    private func animateOpening() {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduceMotion, let layer = panel.contentView?.layer {
+            let scale = CABasicAnimation(keyPath: "transform.scale")
+            scale.fromValue = 0.97
+            scale.toValue = 1
+            scale.duration = 0.24
+            scale.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer.add(scale, forKey: "open")
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.18 : 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
     }
 
     func close(reason: String = "") {

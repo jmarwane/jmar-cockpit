@@ -140,3 +140,12 @@ Choices the spec doesn't make, one per line, with the reason.
 - Launch check-up (also after every save): missing folder, missing or non-executable script, or a program not on PATH shows `Needs attention · <problem>` while the item is idle (dashed-ring glyph, click opens the editor) and marks the icon. Commands starting with `$VAR` aren't checked.
 - Quit: the alert lists Cue-owned services by name and counts tasks (`Splash Server and 1 task are still running`), says which On services another manager runs and will keep running, and defaults to Cancel. Stop and Quit stops Cue-owned groups and cancels tasks, then quits. ⌘Q works while the panel or a Cue window is key; Settings gets a Quit button in M7.
 - Text built from values uses `Text(verbatim:)`: SwiftUI otherwise formats numbers with the locale's grouping (`port 4 917`) and renders Markdown in script output.
+
+## M7 · Polish
+
+- Settings is a plain window (Cue has no SwiftUI App scene): hotkey recorder, the captured environment's source and PATH with Refresh (also re-runs the check-up), Launch Cue at login (SMAppService.mainApp, off by default, with the approval hint when macOS asks), Play a sound with reminders (on by default), Clear History… (asks first), and Quit Cue. ⌘, opens it from the panel.
+- VoiceOver: each row is one button labelled `<name>, <status>. <action>.`; times are spelled out (`running for 4 minutes`, `stopped 1 minute ago`), links read `link to …`, reminders and the New Reminder row read their subtitle, the add row hints Tab.
+- Increase Contrast: stronger selection highlight and a 1 pt, higher-contrast panel edge (follows the setting live). Reduce Transparency is handled by NSVisualEffectView (solid background). Reduce Motion: the panel fades without scaling, glyphs fade instead of popping, spinners stop.
+- The panel opens in 0.24 s from 97 % scale with a fade; the selection highlight slides (0.14 s) for both keys and hover.
+- Light and dark were checked against the §14 tokens with `-CueAppearance light|dark` (Debug only).
+- The Swift 6.3.3 compiler crashed on `Binding(set: someMainActorMethod)`; a closure wrapper avoids it.

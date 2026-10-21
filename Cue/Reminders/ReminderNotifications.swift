@@ -45,7 +45,8 @@ final class ReminderNotifications: NSObject, ReminderNotifying, UNUserNotificati
             let content = UNMutableNotificationContent()
             content.title = reminder.text
             content.body = "Due \(ReminderBook.clock(reminder.due, now: Date()))"
-            content.sound = .default
+            // Reminders are the only thing in Cue that makes a sound, and only if Settings allows it.
+            content.sound = UserDefaults.standard.bool(forKey: SettingsKeys.reminderSound) ? .default : nil
             content.categoryIdentifier = Self.category
             content.userInfo = [Self.idKey: reminder.id.uuidString]
             let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: reminder.due)

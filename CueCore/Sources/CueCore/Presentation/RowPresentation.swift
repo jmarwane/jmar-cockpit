@@ -207,7 +207,57 @@ public struct RowPresentation: Sendable, Equatable {
     }
 }
 
+extension RowPresentation {
+    /// What VoiceOver reads for a row: `Splash Server, running for 4 minutes, localhost:4000. Stop.`
+    public static func accessibilityLabel(
+        item: Item, service: ServiceStatus? = nil, task: TaskState? = nil, problem: String? = nil, now: Date = Date()
+    ) -> String {
+        let row = make(item: item, service: service, task: task, problem: problem, now: now)
+        var status = spokenStatus(item: item, row: row, service: service, task: task, now: now)
+        if status.hasSuffix("…") { status.removeLast() }
+        var label = "\(item.name), \(status)."
+        if row.primary != .none {
+            label += " \(row.primary.label.replacingOccurrences(of: "…", with: ""))."
+        }
+        return label
+    }
+
+    private static func spokenStatus(item: Item, row: RowPresentation, service: ServiceStatus?, task: TaskState?, now: Date) -> String {
+        switch (item.kind, service?.state, task) {
+        case (.service, .on(let since?, .cue)?, _):
+            var text = "running for \(RelativeText.spoken(now.timeIntervalSince(since)))"
+            let address = row.subtitle.split(separator: " · ").dropFirst(2).joined(separator: ", ")
+            if !address.isEmpty { text += ", \(address)" }
+            return text
+        case (.service, .off(let since?)?, _) where row.glyph == .off:
+            return "not running, stopped \(RelativeText.spoken(now.timeIntervalSince(since))) ago"
+        case (.task, _, .running(let since)?):
+            return "running for \(RelativeText.spoken(now.timeIntervalSince(since)))"
+        case (.link, _, _):
+            return "link to \(row.subtitle)"
+        default:
+            // Subtitles read well once the dots become pauses and short units are spelled out.
+            var text = row.subtitle.replacingOccurrences(of: " · ", with: ", ")
+            text = text.replacingOccurrences(of: #"(\d+)m ago"#, with: "$1 minutes ago", options: .regularExpression)
+            text = text.replacingOccurrences(of: #"(\d+)h ago"#, with: "$1 hours ago", options: .regularExpression)
+            text = text.replacingOccurrences(of: #"(\d+)d ago"#, with: "$1 days ago", options: .regularExpression)
+            guard let first = text.first else { return text }
+            return first.lowercased() + text.dropFirst()
+        }
+    }
+}
+
 public enum RelativeText {
+    /// `42 seconds`, `4 minutes`, `1 hour 5 minutes`, for VoiceOver.
+    public static func spoken(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        func unit(_ value: Int, _ name: String) -> String { "\(value) \(name)\(value == 1 ? "" : "s")" }
+        if seconds < 60 { return unit(seconds, "second") }
+        if seconds < 3600 { return unit(seconds / 60, "minute") }
+        let minutes = (seconds % 3600) / 60
+        return minutes == 0 ? unit(seconds / 3600, "hour") : "\(unit(seconds / 3600, "hour")) \(unit(minutes, "minute"))"
+    }
+
     /// `just now`, `3m ago`, `2h ago`, `4d ago`.
     public static func ago(_ date: Date, now: Date = Date()) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(date)))

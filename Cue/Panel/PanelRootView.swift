@@ -5,6 +5,10 @@ struct PanelRootView: View {
     @Bindable var model: PanelModel
     @FocusState private var searchFocused: Bool
     @Namespace private var selectionSpace
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    /// The selection highlight; stronger with Increase Contrast.
+    private var selectionFill: Color { Palette.ink.opacity(contrast == .increased ? 0.16 : 0.075) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,22 +124,25 @@ struct PanelRootView: View {
                 }
             }
             .padding(Metrics.listInset)
+            // The selection highlight slides between rows.
+            .animation(.easeOut(duration: 0.14), value: model.selection)
         }
     }
 
-    private func selectable<Label: View>(_ id: UUID, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
+    private func selectable<Label: View>(_ id: UUID, label spoken: String, action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
         let isSelected = model.selection == id
         return Button(action: action) {
             label()
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: Metrics.selectionRadius, style: .continuous)
-                            .fill(Palette.ink.opacity(0.075))
+                            .fill(selectionFill)
                             .matchedGeometryEffect(id: "selection", in: selectionSpace)
                     }
                 }
         }
         .buttonStyle(RowButtonStyle())
+        .accessibilityLabel(spoken)
         .onContinuousHover { phase in
             if case .active = phase { withAnimation(.easeOut(duration: 0.14)) { model.hover(id: id) } }
         }
@@ -144,7 +151,7 @@ struct PanelRootView: View {
 
     @ViewBuilder private func newReminderRow(now: Date) -> some View {
         let id = PanelModel.newReminderRowID
-        selectable(id, action: { model.selection = id; model.activateNewReminderRow() }) {
+        selectable(id, label: "New Reminder, \(ReminderBook.summary(model.app.reminders, now: now)).", action: { model.selection = id; model.activateNewReminderRow() }) {
             ReminderRowView(
                 title: "New Reminder",
                 presentation: RowPresentation(glyph: .chevron, subtitle: ReminderBook.summary(model.app.reminders, now: now), primary: .none),
@@ -159,7 +166,8 @@ struct PanelRootView: View {
 
     @ViewBuilder private func reminderRow(_ reminder: Reminder, now: Date) -> some View {
         let presentation = ReminderBook.presentation(reminder, now: now)
-        selectable(reminder.id, action: { model.activateReminder(reminder) }) {
+        let spoken = "\(reminder.text), \(presentation.subtitle.replacingOccurrences(of: " · ", with: ", ")). \(reminder.state == .pending ? "Change" : "Dismiss")."
+        selectable(reminder.id, label: spoken, action: { model.activateReminder(reminder) }) {
             ReminderRowView(
                 title: reminder.text,
                 presentation: presentation,
@@ -179,10 +187,12 @@ struct PanelRootView: View {
             model.activateAddRow()
         } label: {
             AddRowView(model: model, isSelected: isSelected, now: now)
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("\(model.addRowFooterLabel). Tab switches between Link, Command and Reminder.")
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: Metrics.selectionRadius, style: .continuous)
-                            .fill(Palette.ink.opacity(0.075))
+                            .fill(selectionFill)
                             .matchedGeometryEffect(id: "selection", in: selectionSpace)
                     }
                 }
@@ -216,12 +226,16 @@ struct PanelRootView: View {
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: Metrics.selectionRadius, style: .continuous)
-                            .fill(Palette.ink.opacity(0.075))
+                            .fill(selectionFill)
                             .matchedGeometryEffect(id: "selection", in: selectionSpace)
                     }
                 }
             }
             .buttonStyle(RowButtonStyle())
+            .accessibilityLabel(RowPresentation.accessibilityLabel(
+                item: item, service: model.app.services[item.id], task: model.app.tasks[item.id],
+                problem: model.app.problems[item.id], now: now
+            ))
             .onContinuousHover { phase in
                 // Hover only selects; it doesn't pull the selection away from an open form.
                 if case .active = phase {

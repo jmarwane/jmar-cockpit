@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController?
     private var editor: EditorWindowController?
     private var logs: LogWindowController?
+    private var settings: SettingsWindowController?
 
     /// Quit with Cue-owned processes running: name them, offer Stop and Quit, and default to Cancel (spec §12).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -43,12 +44,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainMenu.install()
+        SettingsKeys.register()
         var store = LibraryStore()
         var secrets: any SecretStore = KeychainSecretStore()
         var notifications: any ReminderNotifying = ReminderNotifications()
         #if DEBUG
         // Debug aid: `-CueLibraryDirectory <dir>` reads and writes a fixture library instead of the real one,
         // with secrets kept in memory so testing never touches the login Keychain.
+        // Debug aid: `-CueAppearance light|dark` to check both appearances against the tokens.
+        switch UserDefaults.standard.string(forKey: "CueAppearance") {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         if let directory = UserDefaults.standard.string(forKey: "CueLibraryDirectory") {
             store = LibraryStore(directory: URL(fileURLWithPath: directory, isDirectory: true))
             secrets = InMemorySecretStore()
@@ -62,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.model.openEditorNew = { [weak editor] command in editor?.showNew(command: command) }
         let logs = LogWindowController(app: app)
         panel.model.openLog = { [weak logs] id in logs?.show(id) }
+        let settings = SettingsWindowController(app: app)
+        panel.model.openSettings = { [weak settings] in settings?.show() }
         let statusItem = StatusItemController { [weak panel] in panel?.toggle() }
         app.onIconChange = { [weak statusItem] state in statusItem?.setIcon(state) }
         app.onOpenPanel = { [weak panel] in if panel?.isVisible == false { panel?.show() } }
@@ -79,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.app = app
         self.editor = editor
         self.logs = logs
+        self.settings = settings
         self.panel = panel
         self.statusItem = statusItem
 
@@ -96,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         DebugSnapshot.write(window, to: parts[1])
                     }
                 }
+                if command == "settings" { settings.show() }
                 if command.hasPrefix("window-close:") { NSApp.windows.first { $0.title == String(command.dropFirst("window-close:".count)) }?.performClose(nil) }
                 if command.hasPrefix("log:"), let item = app.items.first(where: { $0.name == String(command.dropFirst(4)) }) { logs.show(item.id) }
                 if command.hasPrefix("editor-new:") { editor.showNew(command: String(command.dropFirst("editor-new:".count))) }

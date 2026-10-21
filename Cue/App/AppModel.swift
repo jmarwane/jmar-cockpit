@@ -124,6 +124,15 @@ final class AppModel {
         }
     }
 
+    /// Settings › Environment › Refresh: capture again, then re-run the check-up with the new PATH.
+    func refreshEnvironment() async {
+        let captured = await LoginShellEnvironment.capture()
+        await supervisor.setEnvironment(captured.variables)
+        environment = captured
+        runCheckup()
+        onToast("Environment refreshed")
+    }
+
     /// The launch check-up: a missing folder, script or program marks the item as needing attention.
     func runCheckup() {
         let path = commandPath
